@@ -4,7 +4,7 @@ const fs = require('fs');
 const PMF_URL = 'https://apply.myrmapp.com/multi-step-apply/drubin';
 
 async function fillPmfApplication(applicant) {
-  const browser = await chromium.launch({ headless: false });
+const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
   await page.goto(PMF_URL, { waitUntil: 'networkidle' });
 
