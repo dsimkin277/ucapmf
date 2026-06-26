@@ -1,4 +1,4 @@
-const { chromium } = require('playwright');
+const { chromium } = require('playwright-core');
 const http = require('http');
 const nodemailer = require('nodemailer');
 
@@ -6,6 +6,8 @@ const PMF_URL = 'https://apply.myrmapp.com/multi-step-apply/drubin';
 const JOTFORM_API_KEY = process.env.JOTFORM_API_KEY;
 const UCA_FORM_ID = process.env.UCA_FORM_ID || '243357629795170';
 const POLL_INTERVAL_MS = 2 * 60 * 1000;
+const BROWSERBASE_API_KEY = process.env.BROWSERBASE_API_KEY;
+const BROWSERBASE_PROJECT_ID = process.env.BROWSERBASE_PROJECT_ID;
 
 let processedSubmissionIds = new Set();
 
@@ -23,7 +25,7 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-async function sendReadyToSignEmail(applicantName) {
+async function sendReadyToSignEmail(applicantName, liveViewUrl) {
   if (!process.env.EMAIL_USER || !process.env.NOTIFY_EMAIL) {
     console.log('Email not configured, skipping notification.');
     return;
@@ -32,7 +34,9 @@ async function sendReadyToSignEmail(applicantName) {
     from: process.env.EMAIL_USER,
     to: process.env.NOTIFY_EMAIL,
     subject: `PMF Application Ready to Sign — ${applicantName}`,
-    text: `The PMF application for ${applicantName} has been filled out (Steps 1-2) and the consent box checked. Please open the PMF form, upload the bank statements/license, draw the signature, and submit.`,
+    html: `<p>The PMF application for <b>${applicantName}</b> has been filled out (Steps 1-2) and the consent box checked.</p>
+           <p><a href="${liveViewUrl}">Click here to open and review the live form</a></p>
+           <p>Upload the bank statements/license, draw the signature, and submit.</p>`,
   });
   console.log(`Notification email sent for ${applicantName}`);
 }
@@ -82,9 +86,33 @@ function mapSubmissionToApplicant(sub) {
   };
 }
 
+async function createBrowserbaseSession() {
+  const res = await fetch('https://api.browserbase.com/v1/sessions', {
+    method: 'POST',
+    headers: {
+      'X-BB-API-Key': BROWSERBASE_API_KEY,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ projectId: BROWSERBASE_PROJECT_ID, keepAlive: true }),
+  });
+  const data = await res.json();
+  return data; // contains id, connectUrl
+}
+
+async function getLiveViewUrl(sessionId) {
+  const res = await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/debug`, {
+    headers: { 'X-BB-API-Key': BROWSERBASE_API_KEY },
+  });
+  const data = await res.json();
+  return data.debuggerFullscreenUrl || data.debuggerUrl;
+}
+
 async function fillPmfApplication(applicant) {
-  const browser = await chromium.launch({ headless: true });
-  const page = await browser.newPage();
+  const session = await createBrowserbaseSession();
+  const browser = await chromium.connectOverCDP(session.connectUrl);
+  const context = browser.contexts()[0];
+  const page = context.pages()[0] || (await context.newPage());
+
   await page.goto(PMF_URL, { waitUntil: 'networkidle' });
 
   await page.fill('#apply-firstName', applicant.firstName);
@@ -135,12 +163,12 @@ async function fillPmfApplication(applicant) {
   }
 
   console.log(`Steps 1-2 filled for ${applicant.firstName} ${applicant.lastName}. Consent checked.`);
-  try {
-    await page.screenshot({ path: `/tmp/${applicant.firstName}-${applicant.lastName}.png`, fullPage: true });
-  } catch (e) {
-    console.log('Screenshot failed (non-fatal):', e.message);
-  }
-  await browser.close();
+
+  const liveViewUrl = await getLiveViewUrl(session.id);
+
+  // IMPORTANT: do NOT close the browser here — it must stay open
+  // so the link in the email actually shows the live, filled-in form.
+  return liveViewUrl;
 }
 
 async function fillCombobox(page, selector, value) {
@@ -166,8 +194,8 @@ async function checkForNewSubmissions() {
     for (const sub of submissions) {
       console.log(`New UCA submission found: ${sub.id}`);
       const applicant = mapSubmissionToApplicant(sub);
-      await fillPmfApplication(applicant);
-      await sendReadyToSignEmail(`${applicant.firstName} ${applicant.lastName}`);
+      const liveViewUrl = await fillPmfApplication(applicant);
+      await sendReadyToSignEmail(`${applicant.firstName} ${applicant.lastName}`, liveViewUrl);
       processedSubmissionIds.add(sub.id);
     }
   } catch (err) {
