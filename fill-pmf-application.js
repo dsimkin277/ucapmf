@@ -44,7 +44,9 @@ async function sendReadyToSignEmail(applicantName, liveViewUrl) {
 }
 
 async function fetchNewSubmissions() {
-  const url = `https://api.jotform.com/form/${UCA_FORM_ID}/submissions?apiKey=${JOTFORM_API_KEY}&limit=20&orderby=created_at`;
+  // Only fetch submissions from the last 10 minutes
+  const tenMinutesAgo = Math.floor(Date.now() / 1000) - (10 * 60);
+  const url = `https://api.jotform.com/form/${UCA_FORM_ID}/submissions?apiKey=${JOTFORM_API_KEY}&limit=20&orderby=created_at&createdAfter=${tenMinutesAgo}`;
   const res = await fetch(url);
   const data = await res.json();
   if (!data.content) return [];
