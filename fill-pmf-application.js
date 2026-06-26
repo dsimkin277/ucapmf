@@ -84,16 +84,20 @@ function answerToPhone(ans) {
 
 function mapSubmissionToApplicant(sub) {
   const answers = sub.answers || {};
+  const findMatch = (label) => {
+    const all = Object.values(answers).filter((a) => a.text === label);
+    return all.find((a) => a.answer && (typeof a.answer !== 'object' || Object.keys(a.answer).length)) || all[0];
+  };
   const getAnswer = (label) => {
-    const match = Object.values(answers).find((a) => a.text === label);
+    const match = findMatch(label);
     return match ? answerToString(match.answer) : '';
   };
   const getDate = (label) => {
-    const match = Object.values(answers).find((a) => a.text === label);
+    const match = findMatch(label);
     return match ? answerToDate(match.answer) : '';
   };
   const getPhone = (label) => {
-    const match = Object.values(answers).find((a) => a.text === label);
+    const match = findMatch(label);
     return match ? answerToPhone(match.answer) : '';
   };
 
@@ -105,7 +109,7 @@ function mapSubmissionToApplicant(sub) {
     email: getAnswer('Email'),
     cellPhone: getPhone('Phone Number'),
     businessName: getAnswer('Company Name'),
-    businessStartDate: getAnswer('Business Starting Date'),
+    businessStartDate: getDate('Business Starting Date'),
     industry: getAnswer('Business Industry'),
     ein: getAnswer('EIN'),
     website: getAnswer('Company Website'),
