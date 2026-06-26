@@ -61,26 +61,55 @@ function answerToString(ans) {
   return String(ans);
 }
 
+function answerToDate(ans) {
+  if (!ans) return '';
+  if (typeof ans === 'string') return ans;
+  if (typeof ans === 'object') {
+    const month = ans.month || ans.m;
+    const day = ans.day || ans.d;
+    const year = ans.year || ans.y;
+    if (month && day && year) return `${month}/${day}/${year}`;
+  }
+  return answerToString(ans);
+}
+
+function answerToPhone(ans) {
+  if (!ans) return '';
+  if (typeof ans === 'string') return ans;
+  if (typeof ans === 'object') {
+    return Object.values(ans).filter(Boolean).join('');
+  }
+  return answerToString(ans);
+}
+
 function mapSubmissionToApplicant(sub) {
   const answers = sub.answers || {};
   const getAnswer = (label) => {
     const match = Object.values(answers).find((a) => a.text === label);
     return match ? answerToString(match.answer) : '';
   };
+  const getDate = (label) => {
+    const match = Object.values(answers).find((a) => a.text === label);
+    return match ? answerToDate(match.answer) : '';
+  };
+  const getPhone = (label) => {
+    const match = Object.values(answers).find((a) => a.text === label);
+    return match ? answerToPhone(match.answer) : '';
+  };
 
   return {
     firstName: getAnswer('Legal First Name'),
     lastName: getAnswer('Legal Last Name'),
-    dob: getAnswer('Date Of Birth'),
+    dob: getDate('Date Of Birth'),
     ssn: getAnswer('Social Security Number'),
     email: getAnswer('Email'),
-    cellPhone: getAnswer('Phone Number'),
+    cellPhone: getPhone('Phone Number'),
     businessName: getAnswer('Company Name'),
     businessStartDate: getAnswer('Business Starting Date'),
     industry: getAnswer('Business Industry'),
     ein: getAnswer('EIN'),
     website: getAnswer('Company Website'),
-    businessPhone: getAnswer('Phone Number'),
+    businessPhone: getPhone('Phone Number'),
     ficoScore: getAnswer('Your Credit Score'),
     ownershipPct: '100',
     employeeCount: '1',
