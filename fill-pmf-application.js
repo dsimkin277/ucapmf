@@ -2,6 +2,8 @@ const { chromium } = require('playwright-core');
 const Browserbase = require('@browserbasehq/sdk').default;
 const http = require('http');
 const nodemailer = require('nodemailer');
+const pdf = require('pdf-parse');
+const https = require('https');
 
 const PMF_URL = 'https://apply.myrmapp.com/multi-step-apply/drubin';
 const JOTFORM_API_KEY = process.env.JOTFORM_API_KEY;
@@ -129,13 +131,47 @@ function mapSubmissionToApplicant(sub) {
     ownsMultipleBusinesses: false,
     isHomeBased: true,
     ownsHomeProperty: false,
-    stateOfIncorporation: '',
-    addressLine1: '',
+    // Will be filled from bank statement
+    stateOfIncorporation: sub.bankStatementData?.stateOfIncorporation || '',
+    addressLine1: sub.bankStatementData?.addressLine1 || '',
     addressLine2: '',
-    city: '',
-    state: '',
-    zip: '',
+    city: sub.bankStatementData?.city || '',
+    state: sub.bankStatementData?.state || '',
+    zip: sub.bankStatementData?.zip || '',
   };
+}
+
+async function downloadAndExtractBankStatement(pdfUrl) {
+  try {
+    const dataBuffer = await new Promise((resolve, reject) => {
+      https.get(pdfUrl, (res) => {
+        const chunks = [];
+        res.on('data', (chunk) => chunks.push(chunk));
+        res.on('end', () => resolve(Buffer.concat(chunks)));
+        res.on('error', reject);
+      });
+    });
+
+    const data = await pdf(dataBuffer);
+    const text = data.text;
+
+    const nameMatch = text.match(/([A-Z\s&]+(?:INC|LLC|CORP|PLLC))/);
+    const entityType = nameMatch ? nameMatch[1].replace(/^.*\s(INC|LLC|CORP|PLLC)$/, '$1') : '';
+
+    const addressMatch = text.match(/(\d+\s[A-Z\s#]+)\n([A-Z\s]+),?\s([A-Z]{2})\s(\d{5})/);
+
+    return {
+      entityType: entityType || 'INC',
+      stateOfIncorporation: addressMatch?.[3] || 'CA',
+      addressLine1: addressMatch?.[1] || '',
+      city: addressMatch?.[2]?.trim() || '',
+      state: addressMatch?.[3] || 'CA',
+      zip: addressMatch?.[4] || '',
+    };
+  } catch (err) {
+    console.error('Bank statement extraction failed:', err);
+    return null;
+  }
 }
 
 async function fillPmfApplication(applicant) {
@@ -224,6 +260,12 @@ async function checkForNewSubmissions() {
     for (const sub of submissions) {
       console.log(`New UCA submission found: ${sub.id}`);
       processedSubmissionIds.add(sub.id);
+
+      const bankStatement = Object.values(sub.answers).find(a => a.text && a.text.includes('Bank Statements'));
+      if (bankStatement?.answer?.[0]) {
+        sub.bankStatementData = await downloadAndExtractBankStatement(bankStatement.answer[0]);
+      }
+
       const applicant = mapSubmissionToApplicant(sub);
       const liveViewUrl = await fillPmfApplication(applicant);
       await sendReadyToSignEmail(`${applicant.firstName} ${applicant.lastName}`, liveViewUrl);
