@@ -1,4 +1,5 @@
 const { chromium } = require('playwright-core');
+const Browserbase = require('@browserbasehq/sdk').default;
 const http = require('http');
 const nodemailer = require('nodemailer');
 
@@ -6,7 +7,8 @@ const PMF_URL = 'https://apply.myrmapp.com/multi-step-apply/drubin';
 const JOTFORM_API_KEY = process.env.JOTFORM_API_KEY;
 const UCA_FORM_ID = process.env.UCA_FORM_ID || '243357629795170';
 const POLL_INTERVAL_MS = 2 * 60 * 1000;
-const BROWSERBASE_API_KEY = process.env.BROWSERBASE_API_KEY;
+
+const bb = new Browserbase({ apiKey: process.env.BROWSERBASE_API_KEY });
 const BROWSERBASE_PROJECT_ID = process.env.BROWSERBASE_PROJECT_ID;
 
 let processedSubmissionIds = new Set();
@@ -96,29 +98,8 @@ function mapSubmissionToApplicant(sub) {
   };
 }
 
-async function createBrowserbaseSession() {
-  const res = await fetch('https://api.browserbase.com/v1/sessions', {
-    method: 'POST',
-    headers: {
-      'X-BB-API-Key': BROWSERBASE_API_KEY,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ projectId: BROWSERBASE_PROJECT_ID, keepAlive: true }),
-  });
-  const data = await res.json();
-  return data;
-}
-
-async function getLiveViewUrl(sessionId) {
-  const res = await fetch(`https://api.browserbase.com/v1/sessions/${sessionId}/debug`, {
-    headers: { 'X-BB-API-Key': BROWSERBASE_API_KEY },
-  });
-  const data = await res.json();
-  return data.debuggerFullscreenUrl || data.debuggerUrl;
-}
-
 async function fillPmfApplication(applicant) {
-  const session = await createBrowserbaseSession();
+  const session = await bb.sessions.create({ projectId: BROWSERBASE_PROJECT_ID });
   const browser = await chromium.connectOverCDP(session.connectUrl);
   const context = browser.contexts()[0];
   const page = context.pages()[0] || (await context.newPage());
@@ -174,9 +155,8 @@ async function fillPmfApplication(applicant) {
 
   console.log(`Steps 1-2 filled for ${applicant.firstName} ${applicant.lastName}. Consent checked.`);
 
-  const liveViewUrl = await getLiveViewUrl(session.id);
-
-  return liveViewUrl;
+  const debugUrls = await bb.sessions.debug(session.id);
+  return debugUrls.debuggerFullscreenUrl || debugUrls.debuggerUrl;
 }
 
 async function fillCombobox(page, selector, value) {
