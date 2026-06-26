@@ -1,0 +1,12 @@
+{
+  "name": "pmf-application-filler",
+  "version": "1.0.0",
+  "description": "Auto-fills Steps 1-2 of the PMF application from UCA applicant data.",
+  "main": "fill-pmf-application.js",
+  "scripts": {
+    "start": "node fill-pmf-application.js sample-applicant.json"
+  },
+  "dependencies": {
+    "playwright": "^1.45.0"
+  }
+}
