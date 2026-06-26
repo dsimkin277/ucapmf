@@ -49,11 +49,21 @@ async function fetchNewSubmissions() {
   return data.content.filter((sub) => !processedSubmissionIds.has(sub.id));
 }
 
+function answerToString(ans) {
+  if (ans === undefined || ans === null) return '';
+  if (typeof ans === 'string') return ans;
+  if (typeof ans === 'number' || typeof ans === 'boolean') return String(ans);
+  if (typeof ans === 'object') {
+    return Object.values(ans).filter(Boolean).join(' ');
+  }
+  return String(ans);
+}
+
 function mapSubmissionToApplicant(sub) {
   const answers = sub.answers || {};
   const getAnswer = (label) => {
     const match = Object.values(answers).find((a) => a.text === label);
-    return match ? match.answer : '';
+    return match ? answerToString(match.answer) : '';
   };
 
   return {
@@ -96,7 +106,7 @@ async function createBrowserbaseSession() {
     body: JSON.stringify({ projectId: BROWSERBASE_PROJECT_ID, keepAlive: true }),
   });
   const data = await res.json();
-  return data; // contains id, connectUrl
+  return data;
 }
 
 async function getLiveViewUrl(sessionId) {
@@ -166,8 +176,6 @@ async function fillPmfApplication(applicant) {
 
   const liveViewUrl = await getLiveViewUrl(session.id);
 
-  // IMPORTANT: do NOT close the browser here — it must stay open
-  // so the link in the email actually shows the live, filled-in form.
   return liveViewUrl;
 }
 
@@ -193,10 +201,10 @@ async function checkForNewSubmissions() {
     const submissions = await fetchNewSubmissions();
     for (const sub of submissions) {
       console.log(`New UCA submission found: ${sub.id}`);
+      processedSubmissionIds.add(sub.id);
       const applicant = mapSubmissionToApplicant(sub);
       const liveViewUrl = await fillPmfApplication(applicant);
       await sendReadyToSignEmail(`${applicant.firstName} ${applicant.lastName}`, liveViewUrl);
-      processedSubmissionIds.add(sub.id);
     }
   } catch (err) {
     console.error('Error checking submissions:', err);
