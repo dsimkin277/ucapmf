@@ -50,12 +50,7 @@ async function fetchNewSubmissions() {
   const data = await res.json();
   console.log(`[FETCH] API returned ${data.content ? data.content.length : 0} total submissions`);
   if (!data.content) return [];
-  const filtered = data.content.filter((sub) => {
-    const createdTime = Math.floor(new Date(sub.created_at).getTime() / 1000);
-    const passes = createdTime >= SERVICE_START_TIME && !processedSubmissionIds.has(sub.id);
-    if (!passes) console.log(`[FILTER] Skipping ${sub.id}: created=${createdTime}, startup=${SERVICE_START_TIME}, already_processed=${processedSubmissionIds.has(sub.id)}`);
-    return passes;
-  });
+  const filtered = data.content.filter((sub) => !processedSubmissionIds.has(sub.id));
   return filtered;
 }
 
