@@ -148,4 +148,33 @@ async function fillCombobox(page, selector, value) {
   await page.click(selector);
   await page.fill(selector, value);
   await page.waitForTimeout(300);
-  const
+  const option = page.locator(`li:has-text("${value}")`).first();
+  if (await option.count() > 0) await option.click();
+  else await page.keyboard.press('Enter');
+}
+
+async function setToggle(page, selector, shouldBeOn) {
+  const el = await page.$(selector);
+  if (!el) return;
+  const isChecked = await el.isChecked();
+  if (isChecked !== shouldBeOn) await el.click();
+}
+
+async function checkForNewSubmissions() {
+  try {
+    const submissions = await fetchNewSubmissions();
+    for (const sub of submissions) {
+      console.log(`New UCA submission found: ${sub.id}`);
+      const applicant = mapSubmissionToApplicant(sub);
+      await fillPmfApplication(applicant);
+      await sendReadyToSignEmail(`${applicant.firstName} ${applicant.lastName}`);
+      processedSubmissionIds.add(sub.id);
+    }
+  } catch (err) {
+    console.error('Error checking submissions:', err);
+  }
+}
+
+console.log('PMF auto-fill service started. Polling every 2 minutes...');
+checkForNewSubmissions();
+setInterval(checkForNewSubmissions, POLL_INTERVAL_MS);
