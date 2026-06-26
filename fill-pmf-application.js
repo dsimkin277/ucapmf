@@ -118,7 +118,7 @@ async function fillPmfApplication(applicant) {
   if (userAgreement) await userAgreement.check();
 
   await page.click('button:has-text("Next")');
-  await page.waitForTimeout(800);
+  await page.waitForSelector('#businessStartedAt', { timeout: 15000 });
 
   await page.fill('#businessStartedAt', applicant.businessStartDate);
   await fillCombobox(page, '#businessBusinessType', applicant.industry);
