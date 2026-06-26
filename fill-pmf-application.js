@@ -48,12 +48,15 @@ async function fetchNewSubmissions() {
   const url = `https://api.jotform.com/form/${UCA_FORM_ID}/submissions?apiKey=${JOTFORM_API_KEY}&limit=20&orderby=created_at`;
   const res = await fetch(url);
   const data = await res.json();
+  console.log(`[FETCH] API returned ${data.content ? data.content.length : 0} total submissions`);
   if (!data.content) return [];
-  // Only return submissions created after service startup + already processed check
-  return data.content.filter((sub) => {
-    const createdTime = parseInt(sub.created_at);
-    return createdTime >= SERVICE_START_TIME && !processedSubmissionIds.has(sub.id);
+  const filtered = data.content.filter((sub) => {
+    const createdTime = Math.floor(new Date(sub.created_at).getTime() / 1000);
+    const passes = createdTime >= SERVICE_START_TIME && !processedSubmissionIds.has(sub.id);
+    if (!passes) console.log(`[FILTER] Skipping ${sub.id}: created=${createdTime}, startup=${SERVICE_START_TIME}, already_processed=${processedSubmissionIds.has(sub.id)}`);
+    return passes;
   });
+  return filtered;
 }
 
 function answerToString(ans) {
@@ -216,7 +219,9 @@ async function setToggle(page, selector, shouldBeOn) {
 
 async function checkForNewSubmissions() {
   try {
+    console.log(`[POLL] Checking for new submissions (SERVICE_START_TIME: ${SERVICE_START_TIME})...`);
     const submissions = await fetchNewSubmissions();
+    console.log(`[POLL] Fetched ${submissions.length} submissions`);
     for (const sub of submissions) {
       console.log(`New UCA submission found: ${sub.id}`);
       processedSubmissionIds.add(sub.id);
