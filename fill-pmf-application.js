@@ -7,6 +7,7 @@ const PMF_URL = 'https://apply.myrmapp.com/multi-step-apply/drubin';
 const JOTFORM_API_KEY = process.env.JOTFORM_API_KEY;
 const UCA_FORM_ID = process.env.UCA_FORM_ID || '243357629795170';
 const POLL_INTERVAL_MS = 2 * 60 * 1000;
+const SERVICE_START_TIME = Math.floor(Date.now() / 1000);
 
 const bb = new Browserbase({ apiKey: process.env.BROWSERBASE_API_KEY });
 const BROWSERBASE_PROJECT_ID = process.env.BROWSERBASE_PROJECT_ID;
@@ -44,13 +45,15 @@ async function sendReadyToSignEmail(applicantName, liveViewUrl) {
 }
 
 async function fetchNewSubmissions() {
-  // Only fetch submissions from the last 10 minutes
-  const tenMinutesAgo = Math.floor(Date.now() / 1000) - (10 * 60);
-  const url = `https://api.jotform.com/form/${UCA_FORM_ID}/submissions?apiKey=${JOTFORM_API_KEY}&limit=20&orderby=created_at&createdAfter=${tenMinutesAgo}`;
+  const url = `https://api.jotform.com/form/${UCA_FORM_ID}/submissions?apiKey=${JOTFORM_API_KEY}&limit=20&orderby=created_at`;
   const res = await fetch(url);
   const data = await res.json();
   if (!data.content) return [];
-  return data.content.filter((sub) => !processedSubmissionIds.has(sub.id));
+  // Only return submissions created after service startup + already processed check
+  return data.content.filter((sub) => {
+    const createdTime = parseInt(sub.created_at);
+    return createdTime >= SERVICE_START_TIME && !processedSubmissionIds.has(sub.id);
+  });
 }
 
 function answerToString(ans) {
