@@ -9,12 +9,12 @@ const PMF_URL = 'https://apply.myrmapp.com/multi-step-apply/drubin';
 const JOTFORM_API_KEY = process.env.JOTFORM_API_KEY;
 const UCA_FORM_ID = process.env.UCA_FORM_ID || '243357629795170';
 const POLL_INTERVAL_MS = 2 * 60 * 1000;
-const SERVICE_START_TIME = Math.floor(Date.now() / 1000);
 
 const bb = new Browserbase({ apiKey: process.env.BROWSERBASE_API_KEY });
 const BROWSERBASE_PROJECT_ID = process.env.BROWSERBASE_PROJECT_ID;
 
 let processedSubmissionIds = new Set();
+let initialized = false;
 
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
@@ -47,16 +47,19 @@ async function sendReadyToSignEmail(applicantName, liveViewUrl) {
 }
 
 async function fetchNewSubmissions() {
-  const url = `https://api.jotform.com/form/${UCA_FORM_ID}/submissions?apiKey=${JOTFORM_API_KEY}&limit=20&orderby=created_at&direction=DESC`;
+  const url = `https://api.jotform.com/form/${UCA_FORM_ID}/submissions?apiKey=${JOTFORM_API_KEY}&limit=50&orderby=created_at&direction=DESC`;
   const res = await fetch(url);
   const data = await res.json();
   if (!data.content) return [];
-  const newOnes = data.content.filter((sub) => {
-    if (processedSubmissionIds.has(sub.id)) return false;
-    const createdAt = Math.floor(new Date(sub.created_at).getTime() / 1000);
-    return createdAt > SERVICE_START_TIME;
-  });
-  return newOnes;
+
+  if (!initialized) {
+    data.content.forEach((sub) => processedSubmissionIds.add(sub.id));
+    console.log(`[INIT] Marked ${data.content.length} existing submissions as seen.`);
+    initialized = true;
+    return [];
+  }
+
+  return data.content.filter((sub) => !processedSubmissionIds.has(sub.id));
 }
 
 function answerToString(ans) {
@@ -253,9 +256,9 @@ async function setToggle(page, selector, shouldBeOn) {
 
 async function checkForNewSubmissions() {
   try {
-    console.log(`[POLL] Checking for new submissions (SERVICE_START_TIME: ${SERVICE_START_TIME})...`);
+    console.log('[POLL] Checking for new submissions...');
     const submissions = await fetchNewSubmissions();
-    console.log(`[POLL] Fetched ${submissions.length} submissions`);
+    console.log(`[POLL] Fetched ${submissions.length} new submissions`);
     for (const sub of submissions) {
       console.log(`New UCA submission found: ${sub.id}`);
       processedSubmissionIds.add(sub.id);
