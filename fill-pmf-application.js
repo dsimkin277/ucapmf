@@ -67,14 +67,17 @@ function answerToString(ans) {
 
 function answerToDate(ans) {
   if (!ans) return '';
-  if (typeof ans === 'string') return ans;
   if (typeof ans === 'object') {
     const month = ans.month || ans.m;
     const day = ans.day || ans.d;
     const year = ans.year || ans.y;
-    if (month && day && year) return `${month}/${day}/${year}`;
+    if (month && day && year) return `${String(month).padStart(2,'0')}/${String(day).padStart(2,'0')}/${year}`;
   }
-  return answerToString(ans);
+  if (typeof ans === 'string') {
+    const match = ans.match(/(\d{4})-(\d{2})-(\d{2})/);
+    if (match) return `${match[2]}/${match[3]}/${match[1]}`;
+  }
+  return '';
 }
 
 function answerToPhone(ans) {
