@@ -47,17 +47,16 @@ async function sendReadyToSignEmail(applicantName, liveViewUrl) {
 }
 
 async function fetchNewSubmissions() {
-  const tenMinutesAgo = Math.floor(Date.now() / 1000) - (10 * 60);
-  const url = `https://api.jotform.com/form/${UCA_FORM_ID}/submissions?apiKey=${JOTFORM_API_KEY}&limit=20&orderby=created_at`;
+  const url = `https://api.jotform.com/form/${UCA_FORM_ID}/submissions?apiKey=${JOTFORM_API_KEY}&limit=20&orderby=created_at&direction=DESC`;
   const res = await fetch(url);
   const data = await res.json();
-  console.log(`[FETCH] API returned ${data.content ? data.content.length : 0} total submissions`);
   if (!data.content) return [];
-  const filtered = data.content.filter((sub) => {
-    const createdTime = Math.floor(new Date(sub.created_at).getTime() / 1000);
-    return createdTime >= tenMinutesAgo && !processedSubmissionIds.has(sub.id);
+  const newOnes = data.content.filter((sub) => {
+    if (processedSubmissionIds.has(sub.id)) return false;
+    const createdAt = Math.floor(new Date(sub.created_at).getTime() / 1000);
+    return createdAt > SERVICE_START_TIME;
   });
-  return filtered;
+  return newOnes;
 }
 
 function answerToString(ans) {
