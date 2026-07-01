@@ -2,7 +2,7 @@ const { chromium } = require('playwright-core');
 const Browserbase = require('@browserbasehq/sdk').default;
 const http = require('http');
 const nodemailer = require('nodemailer');
-const pdf = require('pdf-parse');
+const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
 const https = require('https');
 const fs = require('fs');
 
@@ -147,6 +147,29 @@ async function downloadFile(fileUrl, destPath) {
   });
 }
 
+async function extractTextFromPDF(buffer) {
+  const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buffer), verbosity: 0 });
+  const pdf = await loadingTask.promise;
+  let fullText = '';
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    const page = await pdf.getPage(pageNum);
+    const content = await page.getTextContent();
+    let lastY = null;
+    let line = '';
+    for (const item of content.items) {
+      const y = item.transform[5];
+      if (lastY !== null && Math.abs(y - lastY) > 2) {
+        fullText += line.trim() + '\n';
+        line = '';
+      }
+      line += item.str + ' ';
+      lastY = y;
+    }
+    if (line.trim()) fullText += line.trim() + '\n';
+  }
+  return fullText;
+}
+
 async function downloadAndExtractBankStatement(pdfUrl) {
   try {
     const dataBuffer = await new Promise((resolve, reject) => {
@@ -157,9 +180,14 @@ async function downloadAndExtractBankStatement(pdfUrl) {
         res.on('error', reject);
       });
     });
-    const data = await pdf(dataBuffer);
-    const text = data.text;
-    console.log('[PDF] Text sample:', text.substring(0, 200));
+
+    let text = '';
+    try {
+      text = await extractTextFromPDF(dataBuffer);
+      console.log(`[PDF] Extracted ${text.length} characters`);
+    } catch (err) {
+      console.log('[PDF] Text extraction failed:', err.message);
+    }
 
     // Find company name + address block
     // Pattern: "COMPANY NAME LLC/INC/CORP" then street then "CITY ST ZIP"
@@ -180,6 +208,8 @@ async function downloadAndExtractBankStatement(pdfUrl) {
       state = blockMatch[4];
       zip = blockMatch[5];
       console.log(`[PDF] Extracted: ${companyName} | ${addressLine1} | ${city}, ${state} ${zip}`);
+    } else {
+      console.log('[PDF] No block match. First 300 chars:', text.slice(0, 300));
     }
 
     return {
