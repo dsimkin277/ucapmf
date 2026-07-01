@@ -271,7 +271,6 @@ async function fillPmfApplication(applicant, bankFilePaths) {
 
   console.log(`[FILL] Done for ${applicant.firstName} ${applicant.lastName}. Waiting for signature.`);
 
-  // Get live view URL for email
   const debugUrls = await bb.sessions.debug(session.id);
   const liveViewUrl = debugUrls.debuggerFullscreenUrl || debugUrls.debuggerUrl;
   return liveViewUrl;
@@ -294,11 +293,12 @@ async function fillCombobox(page, selector, value) {
 async function setToggle(page, selector, shouldBeOn) {
   try {
     const el = await page.$(selector);
-    if (!el) return;
+    if (!el) { console.log(`[FILL] Toggle ${selector} not found`); return; }
     const isChecked = await el.isChecked();
+    console.log(`[FILL] Toggle ${selector}: currently ${isChecked}, want ${shouldBeOn}`);
     if (isChecked !== shouldBeOn) await el.click();
   } catch (e) {
-    console.log(`[FILL] Toggle ${selector} failed (non-fatal):`, e.message);
+    console.log(`[FILL] Toggle ${selector} failed:`, e.message);
   }
 }
 
