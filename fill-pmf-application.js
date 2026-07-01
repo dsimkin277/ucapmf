@@ -1,5 +1,4 @@
-const { chromium } = require('playwright-core');
-const Browserbase = require('@browserbasehq/sdk').default;
+const { chromium } = require('playwright');
 const http = require('http');
 const nodemailer = require('nodemailer');
 const pdf = require('pdf-parse');
@@ -9,9 +8,6 @@ const PMF_URL = 'https://apply.myrmapp.com/multi-step-apply/drubin';
 const JOTFORM_API_KEY = process.env.JOTFORM_API_KEY;
 const UCA_FORM_ID = process.env.UCA_FORM_ID || '243357629795170';
 const POLL_INTERVAL_MS = 2 * 60 * 1000;
-
-const bb = new Browserbase({ apiKey: process.env.BROWSERBASE_API_KEY });
-const BROWSERBASE_PROJECT_ID = process.env.BROWSERBASE_PROJECT_ID;
 
 let processedSubmissionIds = new Set();
 let initialized = false;
@@ -30,7 +26,7 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-async function sendReadyToSignEmail(applicantName, liveViewUrl) {
+async function sendReadyToSignEmail(applicantName) {
   if (!process.env.EMAIL_USER || !process.env.NOTIFY_EMAIL) {
     console.log('Email not configured, skipping notification.');
     return;
@@ -40,8 +36,7 @@ async function sendReadyToSignEmail(applicantName, liveViewUrl) {
     to: process.env.NOTIFY_EMAIL,
     subject: `PMF Application Ready to Sign — ${applicantName}`,
     html: `<p>The PMF application for <b>${applicantName}</b> has been filled out (Steps 1-2) and the consent box checked.</p>
-           <p><a href="${liveViewUrl}">Click here to open and review the live form</a></p>
-           <p>Upload the bank statements/license, draw the signature, and submit.</p>`,
+           <p>Please open the PMF form, upload the bank statements/license, draw the signature, and submit.</p>`,
   });
   console.log(`Notification email sent for ${applicantName}`);
 }
@@ -66,9 +61,7 @@ function answerToString(ans) {
   if (ans === undefined || ans === null) return '';
   if (typeof ans === 'string') return ans;
   if (typeof ans === 'number' || typeof ans === 'boolean') return String(ans);
-  if (typeof ans === 'object') {
-    return Object.values(ans).filter(Boolean).join(' ');
-  }
+  if (typeof ans === 'object') return Object.values(ans).filter(Boolean).join(' ');
   return String(ans);
 }
 
@@ -87,9 +80,7 @@ function answerToDate(ans) {
 function answerToPhone(ans) {
   if (!ans) return '';
   if (typeof ans === 'string') return ans;
-  if (typeof ans === 'object') {
-    return Object.values(ans).filter(Boolean).join('');
-  }
+  if (typeof ans === 'object') return Object.values(ans).filter(Boolean).join('');
   return answerToString(ans);
 }
 
@@ -99,18 +90,9 @@ function mapSubmissionToApplicant(sub) {
     const all = Object.values(answers).filter((a) => a.text === label);
     return all.find((a) => a.answer && (typeof a.answer !== 'object' || Object.keys(a.answer).length)) || all[0];
   };
-  const getAnswer = (label) => {
-    const match = findMatch(label);
-    return match ? answerToString(match.answer) : '';
-  };
-  const getDate = (label) => {
-    const match = findMatch(label);
-    return match ? answerToDate(match.answer) : '';
-  };
-  const getPhone = (label) => {
-    const match = findMatch(label);
-    return match ? answerToPhone(match.answer) : '';
-  };
+  const getAnswer = (label) => { const m = findMatch(label); return m ? answerToString(m.answer) : ''; };
+  const getDate = (label) => { const m = findMatch(label); return m ? answerToDate(m.answer) : ''; };
+  const getPhone = (label) => { const m = findMatch(label); return m ? answerToPhone(m.answer) : ''; };
 
   return {
     firstName: getAnswer('Legal First Name'),
@@ -133,7 +115,6 @@ function mapSubmissionToApplicant(sub) {
     ownsMultipleBusinesses: false,
     isHomeBased: true,
     ownsHomeProperty: false,
-    // Will be filled from bank statement
     stateOfIncorporation: sub.bankStatementData?.stateOfIncorporation || '',
     addressLine1: sub.bankStatementData?.addressLine1 || '',
     addressLine2: '',
@@ -153,21 +134,17 @@ async function downloadAndExtractBankStatement(pdfUrl) {
         res.on('error', reject);
       });
     });
-
     const data = await pdf(dataBuffer);
     const text = data.text;
-
     const nameMatch = text.match(/([A-Z\s&]+(?:INC|LLC|CORP|PLLC))/);
     const entityType = nameMatch ? nameMatch[1].replace(/^.*\s(INC|LLC|CORP|PLLC)$/, '$1') : '';
-
     const addressMatch = text.match(/(\d+\s[A-Z\s#]+)\n([A-Z\s]+),?\s([A-Z]{2})\s(\d{5})/);
-
     return {
-      entityType: entityType || 'INC',
-      stateOfIncorporation: addressMatch?.[3] || 'CA',
+      entityType: entityType || 'LLC',
+      stateOfIncorporation: addressMatch?.[3] || '',
       addressLine1: addressMatch?.[1] || '',
       city: addressMatch?.[2]?.trim() || '',
-      state: addressMatch?.[3] || 'CA',
+      state: addressMatch?.[3] || '',
       zip: addressMatch?.[4] || '',
     };
   } catch (err) {
@@ -177,11 +154,8 @@ async function downloadAndExtractBankStatement(pdfUrl) {
 }
 
 async function fillPmfApplication(applicant) {
-  const session = await bb.sessions.create({ projectId: BROWSERBASE_PROJECT_ID });
-  const browser = await chromium.connectOverCDP(session.connectUrl);
-  const context = browser.contexts()[0];
-  const page = context.pages()[0] || (await context.newPage());
-
+  const browser = await chromium.launch({ headless: true });
+  const page = await browser.newPage();
   await page.goto(PMF_URL, { waitUntil: 'networkidle' });
 
   await page.fill('#apply-firstName', applicant.firstName);
@@ -232,9 +206,7 @@ async function fillPmfApplication(applicant) {
   }
 
   console.log(`Steps 1-2 filled for ${applicant.firstName} ${applicant.lastName}. Consent checked.`);
-
-  const debugUrls = await bb.sessions.debug(session.id);
-  return debugUrls.debuggerFullscreenUrl || debugUrls.debuggerUrl;
+  await browser.close();
 }
 
 async function fillCombobox(page, selector, value) {
@@ -269,8 +241,8 @@ async function checkForNewSubmissions() {
       }
 
       const applicant = mapSubmissionToApplicant(sub);
-      const liveViewUrl = await fillPmfApplication(applicant);
-      await sendReadyToSignEmail(`${applicant.firstName} ${applicant.lastName}`, liveViewUrl);
+      await fillPmfApplication(applicant);
+      await sendReadyToSignEmail(`${applicant.firstName} ${applicant.lastName}`);
     }
   } catch (err) {
     console.error('Error checking submissions:', err);
