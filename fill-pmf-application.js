@@ -111,6 +111,7 @@ function mapSubmissionToApplicant(sub) {
     email: getAnswer('Email'),
     cellPhone: getPhone('Phone Number'),
     businessName: getAnswer('Company Name'),
+    businessName: getAnswer('Company Name'),
     businessStartDate: getDate('Business Starting Date'),
     industry: getAnswer('Business Industry'),
     ein: getAnswer('EIN'),
@@ -183,6 +184,7 @@ async function downloadAndExtractBankStatement(pdfUrl) {
 
     let text = '';
     try {
+      console.log('[PDF] Buffer starts with:', dataBuffer.slice(0, 8).toString('latin1'));
       text = await extractTextFromPDF(dataBuffer);
       console.log(`[PDF] Extracted ${text.length} characters`);
     } catch (err) {
