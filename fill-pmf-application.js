@@ -161,18 +161,34 @@ async function downloadAndExtractBankStatement(pdfUrl) {
     const text = data.text;
     console.log('[PDF] Text sample:', text.substring(0, 200));
 
-    const entityMatch = text.match(/\b(LLC|INC|CORP|PLLC|LP|LLP)\b/i);
-    const entityType = entityMatch ? entityMatch[1].toUpperCase() : '';
-    const addressMatch = text.match(/(\d+\s[\w\s#.,-]+)\n([\w\s]+),?\s+([A-Z]{2})\s+(\d{5})/);
-    const stateMatch = text.match(/\b([A-Z]{2})\b\s+\d{5}/);
+    // Find company name + address block
+    // Pattern: "COMPANY NAME LLC/INC/CORP" then street then "CITY ST ZIP"
+    const blockMatch = text.match(/([A-Z][A-Z\s&'.,-]+(?:LLC|INC|CORP|PLLC|LP|LLP|CO))\s*\n\s*(\d+[\w\s#.,-]+?)\s*\n\s*([A-Z][A-Z\s]+?)\s+([A-Z]{2})\s+(\d{5})/);
+
+    let entityType = '';
+    let addressLine1 = '';
+    let city = '';
+    let state = '';
+    let zip = '';
+
+    if (blockMatch) {
+      const companyName = blockMatch[1].trim();
+      const entMatch = companyName.match(/\b(LLC|INC|CORP|PLLC|LP|LLP)\b$/);
+      entityType = entMatch ? entMatch[1] : '';
+      addressLine1 = blockMatch[2].trim();
+      city = blockMatch[3].trim();
+      state = blockMatch[4];
+      zip = blockMatch[5];
+      console.log(`[PDF] Extracted: ${companyName} | ${addressLine1} | ${city}, ${state} ${zip}`);
+    }
 
     return {
       entityType,
-      stateOfIncorporation: addressMatch?.[3] || stateMatch?.[1] || '',
-      addressLine1: addressMatch?.[1]?.trim() || '',
-      city: addressMatch?.[2]?.trim() || '',
-      state: addressMatch?.[3] || stateMatch?.[1] || '',
-      zip: addressMatch?.[4] || '',
+      stateOfIncorporation: state,
+      addressLine1,
+      city,
+      state,
+      zip,
     };
   } catch (err) {
     console.error('[PDF] Extraction failed:', err.message);
