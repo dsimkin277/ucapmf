@@ -171,6 +171,8 @@ async function fillPmfApplication(applicant) {
 
   await page.click('button:has-text("Next")');
   await page.waitForSelector('#businessStartedAt', { timeout: 15000 });
+  console.log('[FILL] Step 2 loaded, starting business fields...');
+  console.log('[DATA]', JSON.stringify(applicant));
 
   await page.fill('#businessStartedAt', applicant.businessStartDate);
   await fillCombobox(page, '#businessBusinessType', applicant.industry);
