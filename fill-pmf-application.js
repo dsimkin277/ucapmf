@@ -5,24 +5,19 @@ const nodemailer = require('nodemailer');
 const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
 const https = require('https');
 const fs = require('fs');
-
 const PMF_URL = 'https://apply.myrmapp.com/multi-step-apply/drubin';
 const JOTFORM_API_KEY = process.env.JOTFORM_API_KEY;
 const UCA_FORM_ID = process.env.UCA_FORM_ID || '243357629795170';
 const POLL_INTERVAL_MS = 2 * 60 * 1000;
-
 const bb = new Browserbase({ apiKey: process.env.BROWSERBASE_API_KEY });
 const BROWSERBASE_PROJECT_ID = process.env.BROWSERBASE_PROJECT_ID;
-
 let processedSubmissionIds = new Set();
 let initialized = false;
-
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('PMF auto-fill service is running.\n');
 }).listen(PORT, () => console.log(`Health check server listening on port ${PORT}`));
-
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -30,7 +25,6 @@ const transporter = nodemailer.createTransport({
     pass: process.env.EMAIL_APP_PASSWORD,
   },
 });
-
 async function sendReadyToSignEmail(applicantName, liveViewUrl) {
   if (!process.env.EMAIL_USER || !process.env.NOTIFY_EMAIL) {
     console.log('Email not configured, skipping notification.');
@@ -46,23 +40,19 @@ async function sendReadyToSignEmail(applicantName, liveViewUrl) {
   });
   console.log(`Notification email sent for ${applicantName}`);
 }
-
 async function fetchNewSubmissions() {
   const url = `https://api.jotform.com/form/${UCA_FORM_ID}/submissions?apiKey=${JOTFORM_API_KEY}&limit=50&orderby=created_at&direction=DESC`;
   const res = await fetch(url);
   const data = await res.json();
   if (!data.content) return [];
-
   if (!initialized) {
     data.content.forEach((sub) => processedSubmissionIds.add(sub.id));
     console.log(`[INIT] Marked ${data.content.length} existing submissions as seen.`);
     initialized = true;
     return [];
   }
-
   return data.content.filter((sub) => !processedSubmissionIds.has(sub.id));
 }
-
 function answerToString(ans) {
   if (ans === undefined || ans === null) return '';
   if (typeof ans === 'string') return ans;
@@ -70,7 +60,6 @@ function answerToString(ans) {
   if (typeof ans === 'object') return Object.values(ans).filter(Boolean).join(' ');
   return String(ans);
 }
-
 function answerToDate(ans) {
   if (!ans) return '';
   if (typeof ans === 'object') {
@@ -85,14 +74,12 @@ function answerToDate(ans) {
   }
   return '';
 }
-
 function answerToPhone(ans) {
   if (!ans) return '';
   if (typeof ans === 'string') return ans;
   if (typeof ans === 'object') return Object.values(ans).filter(Boolean).join('');
   return answerToString(ans);
 }
-
 function mapSubmissionToApplicant(sub) {
   const answers = sub.answers || {};
   const findMatch = (label) => {
@@ -102,7 +89,6 @@ function mapSubmissionToApplicant(sub) {
   const getAnswer = (label) => { const m = findMatch(label); return m ? answerToString(m.answer) : ''; };
   const getDate = (label) => { const m = findMatch(label); return m ? answerToDate(m.answer) : ''; };
   const getPhone = (label) => { const m = findMatch(label); return m ? answerToPhone(m.answer) : ''; };
-
   return {
     firstName: getAnswer('Legal First Name'),
     lastName: getAnswer('Legal Last Name'),
@@ -134,20 +120,16 @@ function mapSubmissionToApplicant(sub) {
     zip: sub.bankStatementData?.zip || '',
   };
 }
-
-async function downloadFile(fileUrl, destPath) {
-  return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(destPath);
-    https.get(fileUrl, (res) => {
-      res.pipe(file);
-      file.on('finish', () => { file.close(); resolve(destPath); });
-    }).on('error', (err) => {
-      fs.unlink(destPath, () => {});
-      reject(err);
-    });
-  });
+async function fetchBuffer(url) {
+  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+  if (!res.ok) throw new Error(`Request failed with status ${res.status}`);
+  return Buffer.from(await res.arrayBuffer());
 }
-
+async function downloadFile(fileUrl, destPath) {
+  const buffer = await fetchBuffer(fileUrl);
+  fs.writeFileSync(destPath, buffer);
+  return destPath;
+}
 async function extractTextFromPDF(buffer) {
   const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buffer), verbosity: 0 });
   const pdf = await loadingTask.promise;
@@ -170,18 +152,9 @@ async function extractTextFromPDF(buffer) {
   }
   return fullText;
 }
-
 async function downloadAndExtractBankStatement(pdfUrl) {
   try {
-    const dataBuffer = await new Promise((resolve, reject) => {
-      https.get(pdfUrl, (res) => {
-        const chunks = [];
-        res.on('data', (chunk) => chunks.push(chunk));
-        res.on('end', () => resolve(Buffer.concat(chunks)));
-        res.on('error', reject);
-      });
-    });
-
+    const dataBuffer = await fetchBuffer(pdfUrl);
     let text = '';
     try {
       console.log('[PDF] Buffer starts with:', dataBuffer.slice(0, 8).toString('latin1'));
@@ -190,17 +163,14 @@ async function downloadAndExtractBankStatement(pdfUrl) {
     } catch (err) {
       console.log('[PDF] Text extraction failed:', err.message);
     }
-
     // Find company name + address block
     // Pattern: "COMPANY NAME LLC/INC/CORP" then street then "CITY ST ZIP"
     const blockMatch = text.match(/([A-Z][A-Z\s&'.,-]+(?:LLC|INC|CORP|PLLC|LP|LLP|CO))\s*\n\s*(\d+[\w\s#.,-]+?)\s*\n\s*([A-Z][A-Z\s]+?)\s+([A-Z]{2})\s+(\d{5})/);
-
     let entityType = '';
     let addressLine1 = '';
     let city = '';
     let state = '';
     let zip = '';
-
     if (blockMatch) {
       const companyName = blockMatch[1].trim();
       const entMatch = companyName.match(/\b(LLC|INC|CORP|PLLC|LP|LLP)\b$/);
@@ -213,7 +183,6 @@ async function downloadAndExtractBankStatement(pdfUrl) {
     } else {
       console.log('[PDF] No block match. First 300 chars:', text.slice(0, 300));
     }
-
     return {
       entityType,
       stateOfIncorporation: state,
@@ -227,7 +196,6 @@ async function downloadAndExtractBankStatement(pdfUrl) {
     return null;
   }
 }
-
 async function getBankStatementFiles(sub) {
   const answers = sub.answers || {};
   const files = [];
@@ -242,15 +210,12 @@ async function getBankStatementFiles(sub) {
   }
   return [...new Set(files)];
 }
-
 async function fillPmfApplication(applicant, bankFilePaths) {
   const session = await bb.sessions.create({ projectId: BROWSERBASE_PROJECT_ID });
   const browser = await chromium.connectOverCDP(session.connectUrl);
   const context = browser.contexts()[0];
   const page = context.pages()[0] || (await context.newPage());
-
   await page.goto(PMF_URL, { waitUntil: 'networkidle' });
-
   // Step 1 — Contact Info
   await page.fill('#apply-firstName', applicant.firstName);
   await page.fill('#apply-lastName', applicant.lastName);
@@ -259,14 +224,11 @@ async function fillPmfApplication(applicant, bankFilePaths) {
   await page.fill('#apply-email', applicant.email);
   await page.fill('#apply-cellPhone', applicant.cellPhone);
   await page.fill('#apply-businessName', applicant.businessName);
-
   const userAgreement = await page.$('#user-agreement');
   if (userAgreement) await userAgreement.check();
-
   await page.click('button:has-text("Next")');
   await page.waitForSelector('#businessStartedAt', { timeout: 15000 });
   console.log('[FILL] Step 1 done, Step 2 loaded');
-
   // Step 2 — Business Details
   await page.fill('#businessStartedAt', applicant.businessStartDate);
   await fillCombobox(page, '#businessBusinessType', applicant.industry);
@@ -279,21 +241,17 @@ async function fillPmfApplication(applicant, bankFilePaths) {
   await page.fill('#businessEmployeesCount', applicant.employeeCount);
   if (applicant.amountRequested) await page.fill('#amountRequestedCents', applicant.amountRequested);
   if (applicant.entityType) await fillCombobox(page, '#businessEntityType', applicant.entityType);
-
   await setToggle(page, '#businessProcessCreditCards', applicant.processCreditCards);
   await setToggle(page, '#businessMultipleBusinessesOwner', applicant.ownsMultipleBusinesses);
   await setToggle(page, '#businessHomeBased', applicant.isHomeBased);
-
   if (applicant.addressLine1) await page.fill('#businessAddressLine1', applicant.addressLine1);
   if (applicant.addressLine2) await page.fill('#businessAddressLine2', applicant.addressLine2);
   if (applicant.city) await page.fill('#businessCity', applicant.city);
   if (applicant.state) await fillCombobox(page, '#businessState', applicant.state);
   if (applicant.zip) await page.fill('#businessZipCode', applicant.zip);
   await setToggle(page, '#merchantHomePropertyOwner', applicant.ownsHomeProperty);
-
   await page.click('button:has-text("Next")');
   console.log('[FILL] Step 2 done, moving to Step 3');
-
   // Step 3 — File Upload
   await page.waitForTimeout(2000);
   if (bankFilePaths && bankFilePaths.length > 0) {
@@ -305,10 +263,8 @@ async function fillPmfApplication(applicant, bankFilePaths) {
       console.log('[FILL] File upload failed (non-fatal):', e.message);
     }
   }
-
   await page.click('button:has-text("Next")');
   console.log('[FILL] Step 3 done, moving to Step 4');
-
   // Step 4 — Consent, stop before signature
   await page.waitForTimeout(2000);
   const shareInfoCheckbox = await page.$('#isAgreeWithShareInformation');
@@ -316,14 +272,11 @@ async function fillPmfApplication(applicant, bankFilePaths) {
     const checked = await shareInfoCheckbox.isChecked();
     if (!checked) await shareInfoCheckbox.check();
   }
-
   console.log(`[FILL] Done for ${applicant.firstName} ${applicant.lastName}. Waiting for signature.`);
-
   const debugUrls = await bb.sessions.debug(session.id);
   const liveViewUrl = debugUrls.debuggerFullscreenUrl || debugUrls.debuggerUrl;
   return liveViewUrl;
 }
-
 async function fillCombobox(page, selector, value) {
   if (!value) return;
   try {
@@ -337,7 +290,6 @@ async function fillCombobox(page, selector, value) {
     console.log(`[FILL] Combobox ${selector} failed (non-fatal):`, e.message);
   }
 }
-
 async function setToggle(page, selector, shouldBeOn) {
   try {
     const el = await page.$(selector);
@@ -349,20 +301,16 @@ async function setToggle(page, selector, shouldBeOn) {
     console.log(`[FILL] Toggle ${selector} failed:`, e.message);
   }
 }
-
 async function checkForNewSubmissions() {
   try {
     console.log('[POLL] Checking for new submissions...');
     const submissions = await fetchNewSubmissions();
     console.log(`[POLL] Fetched ${submissions.length} new submissions`);
-
     for (const sub of submissions) {
       console.log(`[POLL] New UCA submission found: ${sub.id}`);
       processedSubmissionIds.add(sub.id);
-
       const bankUrls = await getBankStatementFiles(sub);
       console.log(`[PDF] Found ${bankUrls.length} PDF file(s)`);
-
       let bankStatementData = null;
       for (const url of bankUrls) {
         bankStatementData = await downloadAndExtractBankStatement(url);
@@ -372,7 +320,6 @@ async function checkForNewSubmissions() {
         }
       }
       sub.bankStatementData = bankStatementData;
-
       const bankFilePaths = [];
       for (let i = 0; i < bankUrls.length; i++) {
         const tmpPath = `/tmp/bank-${sub.id}-${i}.pdf`;
@@ -383,13 +330,10 @@ async function checkForNewSubmissions() {
           console.log(`[PDF] Download failed for file ${i}:`, e.message);
         }
       }
-
       const applicant = mapSubmissionToApplicant(sub);
       console.log('[DATA]', JSON.stringify(applicant));
-
       const liveViewUrl = await fillPmfApplication(applicant, bankFilePaths);
       await sendReadyToSignEmail(`${applicant.firstName} ${applicant.lastName}`, liveViewUrl);
-
       for (const f of bankFilePaths) {
         try { fs.unlinkSync(f); } catch (e) {}
       }
@@ -398,7 +342,6 @@ async function checkForNewSubmissions() {
     console.error('[ERROR]', err);
   }
 }
-
 console.log('PMF auto-fill service started. Polling every 2 minutes...');
 checkForNewSubmissions();
 setInterval(checkForNewSubmissions, POLL_INTERVAL_MS);
