@@ -11,6 +11,12 @@ const UCA_FORM_ID = process.env.UCA_FORM_ID || '243357629795170';
 const POLL_INTERVAL_MS = 2 * 60 * 1000;
 const bb = new Browserbase({ apiKey: process.env.BROWSERBASE_API_KEY });
 const BROWSERBASE_PROJECT_ID = process.env.BROWSERBASE_PROJECT_ID;
+const ENTITY_TYPE_MAP = {
+  'LLC': 'Limited Liability Company (LLC)',
+  'PLLC': 'Professional Limited Liability Company (PLLC)',
+  'INC': 'C Corporation (C Corp)',
+  'CORP': 'C Corporation (C Corp)',
+};
 let processedSubmissionIds = new Set();
 let initialized = false;
 const PORT = process.env.PORT || 3000;
@@ -246,7 +252,10 @@ async function fillPmfApplication(applicant, bankFilePaths) {
   await page.fill('#ownership', applicant.ownershipPct);
   await page.fill('#businessEmployeesCount', applicant.employeeCount);
   if (applicant.amountRequested) await page.fill('#amountRequestedCents', applicant.amountRequested);
-  if (applicant.entityType) await fillCombobox(page, '#businessEntityType', applicant.entityType);
+  if (applicant.entityType) {
+    const entityTypeLabel = ENTITY_TYPE_MAP[applicant.entityType.toUpperCase()] || applicant.entityType;
+    await fillCombobox(page, '#businessEntityType', entityTypeLabel);
+  }
   await setToggle(page, '#businessProcessCreditCards', applicant.processCreditCards);
   await setToggle(page, '#businessMultipleBusinessesOwner', applicant.ownsMultipleBusinesses);
   await setToggle(page, '#businessHomeBased', applicant.isHomeBased);
@@ -309,7 +318,14 @@ async function setToggle(page, selector, shouldBeOn) {
     if (!el) { console.log(`[FILL] Toggle ${selector} not found`); return; }
     const isChecked = await el.isChecked();
     console.log(`[FILL] Toggle ${selector}: currently ${isChecked}, want ${shouldBeOn}`);
-    if (isChecked !== shouldBeOn) await el.click();
+    if (isChecked !== shouldBeOn) {
+      await el.click();
+    } else {
+      console.log(`[FILL] Toggle ${selector} already at ${shouldBeOn}, clicking twice to register as answered`);
+      await el.click();
+      await page.waitForTimeout(200);
+      await el.click();
+    }
   } catch (e) {
     console.log(`[FILL] Toggle ${selector} failed:`, e.message);
   }
