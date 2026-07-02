@@ -121,9 +121,16 @@ function mapSubmissionToApplicant(sub) {
   };
 }
 async function fetchBuffer(url) {
-  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+  const authedUrl = url.includes('jotform.com') && JOTFORM_API_KEY
+    ? `${url}${url.includes('?') ? '&' : '?'}apiKey=${JOTFORM_API_KEY}`
+    : url;
+  const res = await fetch(authedUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+  console.log(`[FETCH] ${url} -> status ${res.status} (final URL: ${res.url})`);
   if (!res.ok) throw new Error(`Request failed with status ${res.status}`);
-  return Buffer.from(await res.arrayBuffer());
+  const buffer = Buffer.from(await res.arrayBuffer());
+  const preview = buffer.slice(0, 200).toString('utf8').replace(/\s+/g, ' ');
+  console.log(`[FETCH] Content-Type: ${res.headers.get('content-type')} | preview: ${preview}`);
+  return buffer;
 }
 async function downloadFile(fileUrl, destPath) {
   const buffer = await fetchBuffer(fileUrl);
@@ -157,7 +164,6 @@ async function downloadAndExtractBankStatement(pdfUrl) {
     const dataBuffer = await fetchBuffer(pdfUrl);
     let text = '';
     try {
-      console.log('[PDF] Buffer starts with:', dataBuffer.slice(0, 8).toString('latin1'));
       text = await extractTextFromPDF(dataBuffer);
       console.log(`[PDF] Extracted ${text.length} characters`);
     } catch (err) {
