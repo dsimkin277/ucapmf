@@ -288,10 +288,17 @@ async function fillCombobox(page, selector, value) {
   try {
     await page.click(selector);
     await page.fill(selector, value);
-    await page.waitForTimeout(300);
-    const option = page.locator(`li:has-text("${value}")`).first();
-    if (await option.count() > 0) await option.click();
-    else await page.keyboard.press('Enter');
+    await page.waitForTimeout(500);
+    const options = page.locator('li[role="option"]');
+    const optionTexts = await options.allTextContents();
+    console.log(`[FILL] Combobox ${selector} typed "${value}", options seen:`, JSON.stringify(optionTexts));
+    const option = options.filter({ hasText: value }).first();
+    if (await option.count() > 0) {
+      await option.click();
+    } else {
+      console.log(`[FILL] Combobox ${selector}: no option matched "${value}", leaving unselected`);
+      await page.keyboard.press('Escape');
+    }
   } catch (e) {
     console.log(`[FILL] Combobox ${selector} failed (non-fatal):`, e.message);
   }
