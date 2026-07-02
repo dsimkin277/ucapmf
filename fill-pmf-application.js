@@ -246,7 +246,17 @@ async function fillPmfApplication(applicant, bankFilePaths) {
   await fillCombobox(page, '#businessBusinessType', applicant.industry);
   if (applicant.stateOfIncorporation) await fillCombobox(page, '#businessStateOfIncorporation', applicant.stateOfIncorporation);
   await page.fill('#businessFederalTaxId', applicant.ein);
-  if (applicant.website) await page.fill('#businessWebsite', applicant.website);
+  if (applicant.website) {
+    await page.fill('#businessWebsite', applicant.website);
+    console.log('[FILL] Website filled:', applicant.website);
+  } else {
+    try {
+      await page.getByRole('checkbox', { name: /does not have a website/i }).check();
+      console.log('[FILL] No website provided, checked "does not have a website"');
+    } catch (e) {
+      console.log('[FILL] Could not check "no website" checkbox (non-fatal):', e.message);
+    }
+  }
   await page.fill('#businessPhone', applicant.businessPhone);
   await page.fill('#fico', applicant.ficoScore);
   await page.fill('#ownership', applicant.ownershipPct);
