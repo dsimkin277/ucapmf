@@ -2,28 +2,47 @@ const { chromium } = require('playwright-core');
 const Browserbase = require('@browserbasehq/sdk').default;
 const http = require('http');
 const nodemailer = require('nodemailer');
-const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
-const https = require('https');
 const fs = require('fs');
+const { google } = require('googleapis');
+
 const PMF_URL = 'https://apply.myrmapp.com/multi-step-apply/drubin';
-const JOTFORM_API_KEY = process.env.JOTFORM_API_KEY;
-const UCA_FORM_ID = process.env.UCA_FORM_ID || '243357629795170';
-const POLL_INTERVAL_MS = 2 * 60 * 1000;
+const POLL_INTERVAL_MS = 2 * 60 * 1000; // check for new folders every 2 minutes
+const WAIT_BEFORE_PROCESSING_MS = 3 * 60 * 1000; // wait 3 minutes after a folder appears before reading it
+
+const PMF_SUBMISSIONS_FOLDER_ID = process.env.PMF_SUBMISSIONS_FOLDER_ID;
+const GOOGLE_SERVICE_ACCOUNT_KEY = process.env.GOOGLE_SERVICE_ACCOUNT_KEY; // full JSON key, pasted as one line
+
 const bb = new Browserbase({ apiKey: process.env.BROWSERBASE_API_KEY });
 const BROWSERBASE_PROJECT_ID = process.env.BROWSERBASE_PROJECT_ID;
+
 const ENTITY_TYPE_MAP = {
   'LLC': 'Limited Liability Company (LLC)',
   'PLLC': 'Professional Limited Liability Company (PLLC)',
   'INC': 'C Corporation (C Corp)',
   'CORP': 'C Corporation (C Corp)',
 };
-let processedSubmissionIds = new Set();
-let initialized = false;
+
+// ---------- Google Drive / Sheets auth ----------
+const serviceAccount = JSON.parse(GOOGLE_SERVICE_ACCOUNT_KEY);
+const auth = new google.auth.JWT({
+  email: serviceAccount.client_email,
+  key: serviceAccount.private_key,
+  scopes: [
+    'https://www.googleapis.com/auth/drive.readonly',
+    'https://www.googleapis.com/auth/spreadsheets.readonly',
+  ],
+});
+const drive = google.drive({ version: 'v3', auth });
+const sheets = google.sheets({ version: 'v4', auth });
+
+// ---------- health check server (Render needs this) ----------
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': 'text/plain' });
   res.end('PMF auto-fill service is running.\n');
 }).listen(PORT, () => console.log(`Health check server listening on port ${PORT}`));
+
+// ---------- email ----------
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -31,6 +50,7 @@ const transporter = nodemailer.createTransport({
     pass: process.env.EMAIL_APP_PASSWORD,
   },
 });
+
 async function sendReadyToSignEmail(applicantName, liveViewUrl) {
   if (!process.env.EMAIL_USER || !process.env.NOTIFY_EMAIL) {
     console.log('Email not configured, skipping notification.');
@@ -46,188 +66,97 @@ async function sendReadyToSignEmail(applicantName, liveViewUrl) {
   });
   console.log(`Notification email sent for ${applicantName}`);
 }
-async function fetchNewSubmissions() {
-  const url = `https://api.jotform.com/form/${UCA_FORM_ID}/submissions?apiKey=${JOTFORM_API_KEY}&limit=50&orderby=created_at&direction=DESC`;
-  const res = await fetch(url);
-  const data = await res.json();
-  if (!data.content) return [];
-  if (!initialized) {
-    data.content.forEach((sub) => processedSubmissionIds.add(sub.id));
-    console.log(`[INIT] Marked ${data.content.length} existing submissions as seen.`);
-    initialized = true;
-    return [];
+
+// ---------- Google Drive helpers ----------
+async function listSubfolders() {
+  const res = await drive.files.list({
+    q: `'${PMF_SUBMISSIONS_FOLDER_ID}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+    fields: 'files(id, name, createdTime)',
+    orderBy: 'createdTime desc',
+    pageSize: 100,
+  });
+  return res.data.files || [];
+}
+
+async function listFilesInFolder(folderId) {
+  const res = await drive.files.list({
+    q: `'${folderId}' in parents and trashed=false`,
+    fields: 'files(id, name, mimeType)',
+    pageSize: 100,
+  });
+  return res.data.files || [];
+}
+
+async function readSheetAsMap(spreadsheetId) {
+  const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: 'A:B' });
+  const rows = res.data.values || [];
+  const map = {};
+  // skip header row
+  for (const row of rows.slice(1)) {
+    const key = (row[0] || '').trim();
+    const value = (row[1] || '').trim();
+    if (key) map[key] = value;
   }
-  return data.content.filter((sub) => !processedSubmissionIds.has(sub.id));
+  return map;
 }
-function answerToString(ans) {
-  if (ans === undefined || ans === null) return '';
-  if (typeof ans === 'string') return ans;
-  if (typeof ans === 'number' || typeof ans === 'boolean') return String(ans);
-  if (typeof ans === 'object') return Object.values(ans).filter(Boolean).join(' ');
-  return String(ans);
+
+async function downloadDriveFileBuffer(fileId) {
+  const res = await drive.files.get({ fileId, alt: 'media' }, { responseType: 'arraybuffer' });
+  return Buffer.from(res.data);
 }
-function answerToDate(ans) {
-  if (!ans) return '';
-  if (typeof ans === 'object') {
-    const month = ans.month || ans.m;
-    const day = ans.day || ans.d;
-    const year = ans.year || ans.y;
-    if (month && day && year) return `${String(month).padStart(2,'0')}/${String(day).padStart(2,'0')}/${year}`;
-  }
-  if (typeof ans === 'string') {
-    const match = ans.match(/(\d{4})-(\d{2})-(\d{2})/);
-    if (match) return `${match[2]}/${match[3]}/${match[1]}`;
-  }
-  return '';
+
+// ---------- field mapping ----------
+function formatDate(iso) {
+  if (!iso) return '';
+  const m = iso.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[2]}/${m[3]}/${m[1]}`;
+  return iso; // already formatted or unrecognized, pass through
 }
-function answerToPhone(ans) {
-  if (!ans) return '';
-  if (typeof ans === 'string') return ans;
-  if (typeof ans === 'object') return Object.values(ans).filter(Boolean).join('');
-  return answerToString(ans);
+
+function yesNo(v) {
+  return /^y(es)?$/i.test((v || '').trim());
 }
-function mapSubmissionToApplicant(sub) {
-  const answers = sub.answers || {};
-  const findMatch = (label) => {
-    const all = Object.values(answers).filter((a) => a.text === label);
-    return all.find((a) => a.answer && (typeof a.answer !== 'object' || Object.keys(a.answer).length)) || all[0];
-  };
-  const getAnswer = (label) => { const m = findMatch(label); return m ? answerToString(m.answer) : ''; };
-  const getDate = (label) => { const m = findMatch(label); return m ? answerToDate(m.answer) : ''; };
-  const getPhone = (label) => { const m = findMatch(label); return m ? answerToPhone(m.answer) : ''; };
+
+function mapAnswersToApplicant(a) {
   return {
-    firstName: getAnswer('Legal First Name'),
-    lastName: getAnswer('Legal Last Name'),
-    dob: getDate('Date Of Birth'),
-    ssn: getAnswer('Social Security Number'),
-    email: getAnswer('Email'),
-    cellPhone: getPhone('Phone Number'),
-    businessName: getAnswer('Company Name'),
-    businessName: getAnswer('Company Name'),
-    businessStartDate: getDate('Business Starting Date'),
-    industry: getAnswer('Business Industry'),
-    ein: getAnswer('EIN'),
-    website: getAnswer('Company Website'),
-    businessPhone: getPhone('Phone Number'),
-    ficoScore: getAnswer('Your Credit Score'),
-    ownershipPct: '100',
-    employeeCount: '1',
-    amountRequested: getAnswer('Financing Amount'),
-    processCreditCards: getAnswer('Do you process credit cards?') === 'Yes',
-    ownsMultipleBusinesses: false,
-    isHomeBased: true,
-    ownsHomeProperty: false,
-    stateOfIncorporation: sub.bankStatementData?.stateOfIncorporation || '',
-    entityType: sub.bankStatementData?.entityType || '',
-    addressLine1: sub.bankStatementData?.addressLine1 || '',
-    addressLine2: '',
-    city: sub.bankStatementData?.city || '',
-    state: sub.bankStatementData?.state || '',
-    zip: sub.bankStatementData?.zip || '',
+    firstName: a['First Name'] || '',
+    lastName: a['Last Name'] || '',
+    dob: formatDate(a['Date of Birth']),
+    ssn: a['Social Security Number'] || '',
+    email: a['Email'] || '',
+    cellPhone: a['Phone Number'] || '',
+    businessName: a['Company Name'] || '',
+    businessStartDate: formatDate(a['Business Starting Date']),
+    industry: a['Business Industry'] || '',
+    ein: a['EIN'] || '',
+    website: a['Website'] || '',
+    businessPhone: a['Phone Number'] || '',
+    ficoScore: a['Credit Score?'] || a['Credit Score'] || '',
+    ownershipPct: (a['Ownership?'] || a['Ownership'] || '100%').replace('%', ''),
+    employeeCount: a['Number of Employees?'] || a['Number of Employees'] || '1',
+    amountRequested: a['Financing Amount'] || '',
+    processCreditCards: yesNo(a['Processes Credit Cards']),
+    ownsMultipleBusinesses: yesNo(a['Do you own multiple businesses?']),
+    isHomeBased: yesNo(a['Is your business homebased?']),
+    ownsHomeProperty: yesNo(a['Do you own a home property?']),
+    stateOfIncorporation: a['State'] || '',
+    entityType: a['Entity Type'] || '',
+    addressLine1: a['Address 1'] || '',
+    addressLine2: a['Address 2'] || '',
+    city: a['City'] || '',
+    state: a['State'] || '',
+    zip: a['Zip'] || '',
   };
 }
-async function fetchBuffer(url) {
-  const authedUrl = url.includes('jotform.com') && JOTFORM_API_KEY
-    ? `${url}${url.includes('?') ? '&' : '?'}apiKey=${JOTFORM_API_KEY}`
-    : url;
-  const res = await fetch(authedUrl, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-  console.log(`[FETCH] ${url} -> status ${res.status} (final URL: ${res.url})`);
-  if (!res.ok) throw new Error(`Request failed with status ${res.status}`);
-  const buffer = Buffer.from(await res.arrayBuffer());
-  const preview = buffer.slice(0, 200).toString('utf8').replace(/\s+/g, ' ');
-  console.log(`[FETCH] Content-Type: ${res.headers.get('content-type')} | preview: ${preview}`);
-  return buffer;
-}
-async function downloadFile(fileUrl, destPath) {
-  const buffer = await fetchBuffer(fileUrl);
-  fs.writeFileSync(destPath, buffer);
-  return destPath;
-}
-async function extractTextFromPDF(buffer) {
-  const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buffer), verbosity: 0 });
-  const pdf = await loadingTask.promise;
-  let fullText = '';
-  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-    const page = await pdf.getPage(pageNum);
-    const content = await page.getTextContent();
-    let lastY = null;
-    let line = '';
-    for (const item of content.items) {
-      const y = item.transform[5];
-      if (lastY !== null && Math.abs(y - lastY) > 2) {
-        fullText += line.trim() + '\n';
-        line = '';
-      }
-      line += item.str + ' ';
-      lastY = y;
-    }
-    if (line.trim()) fullText += line.trim() + '\n';
-  }
-  return fullText;
-}
-async function downloadAndExtractBankStatement(pdfUrl) {
-  try {
-    const dataBuffer = await fetchBuffer(pdfUrl);
-    let text = '';
-    try {
-      text = await extractTextFromPDF(dataBuffer);
-      console.log(`[PDF] Extracted ${text.length} characters`);
-    } catch (err) {
-      console.log('[PDF] Text extraction failed:', err.message);
-    }
-    // Find company name + address block
-    // Pattern: "COMPANY NAME LLC/INC/CORP" then street then "CITY ST ZIP"
-    const blockMatch = text.match(/([A-Z][A-Z\s&'.,-]+(?:LLC|INC|CORP|PLLC|LP|LLP|CO))\s*\n\s*(\d+[\w\s#.,-]+?)\s*\n\s*([A-Z][A-Z\s]+?)\s+([A-Z]{2})\s+(\d{5})/);
-    let entityType = '';
-    let addressLine1 = '';
-    let city = '';
-    let state = '';
-    let zip = '';
-    if (blockMatch) {
-      const companyName = blockMatch[1].trim();
-      const entMatch = companyName.match(/\b(LLC|INC|CORP|PLLC|LP|LLP)\b$/);
-      entityType = entMatch ? entMatch[1] : '';
-      addressLine1 = blockMatch[2].trim();
-      city = blockMatch[3].trim();
-      state = blockMatch[4];
-      zip = blockMatch[5];
-      console.log(`[PDF] Extracted: ${companyName} | ${addressLine1} | ${city}, ${state} ${zip}`);
-    } else {
-      console.log('[PDF] No block match. First 300 chars:', text.slice(0, 300));
-    }
-    return {
-      entityType,
-      stateOfIncorporation: state,
-      addressLine1,
-      city,
-      state,
-      zip,
-    };
-  } catch (err) {
-    console.error('[PDF] Extraction failed:', err.message);
-    return null;
-  }
-}
-async function getBankStatementFiles(sub) {
-  const answers = sub.answers || {};
-  const files = [];
-  for (const answer of Object.values(answers)) {
-    if (!answer.answer) continue;
-    const urls = Array.isArray(answer.answer) ? answer.answer : [answer.answer];
-    for (const url of urls) {
-      if (typeof url === 'string' && url.includes('jotform.com/uploads') && url.toLowerCase().endsWith('.pdf')) {
-        files.push(url);
-      }
-    }
-  }
-  return [...new Set(files)];
-}
+
+// ---------- form filling (unchanged logic from the working version) ----------
 async function fillPmfApplication(applicant, bankFilePaths) {
   const session = await bb.sessions.create({ projectId: BROWSERBASE_PROJECT_ID });
   const browser = await chromium.connectOverCDP(session.connectUrl);
   const context = browser.contexts()[0];
   const page = context.pages()[0] || (await context.newPage());
   await page.goto(PMF_URL, { waitUntil: 'networkidle' });
+
   // Step 1 — Contact Info
   await page.fill('#apply-firstName', applicant.firstName);
   await page.fill('#apply-lastName', applicant.lastName);
@@ -241,6 +170,7 @@ async function fillPmfApplication(applicant, bankFilePaths) {
   await page.click('button:has-text("Next")');
   await page.waitForSelector('#businessStartedAt', { timeout: 15000 });
   console.log('[FILL] Step 1 done, Step 2 loaded');
+
   // Step 2 — Business Details
   await page.fill('#businessStartedAt', applicant.businessStartDate);
   await fillCombobox(page, '#businessBusinessType', applicant.industry);
@@ -263,7 +193,12 @@ async function fillPmfApplication(applicant, bankFilePaths) {
   await page.fill('#businessEmployeesCount', applicant.employeeCount);
   if (applicant.amountRequested) await page.fill('#amountRequestedCents', applicant.amountRequested);
   if (applicant.entityType) {
-    const entityTypeLabel = ENTITY_TYPE_MAP[applicant.entityType.toUpperCase()] || applicant.entityType;
+    // The sheet already contains the exact PMF label (e.g. "Limited Liability Company (LLC)").
+    // Fall back to the LLC/INC/CORP -> label map only if a raw code slipped through instead.
+    const looksLikeRawCode = /^[A-Z]{2,5}$/.test(applicant.entityType.trim());
+    const entityTypeLabel = looksLikeRawCode
+      ? (ENTITY_TYPE_MAP[applicant.entityType.toUpperCase()] || applicant.entityType)
+      : applicant.entityType;
     await fillCombobox(page, '#businessEntityType', entityTypeLabel);
   }
   await setToggle(page, '#businessProcessCreditCards', applicant.processCreditCards);
@@ -277,6 +212,7 @@ async function fillPmfApplication(applicant, bankFilePaths) {
   await setToggle(page, '#merchantHomePropertyOwner', applicant.ownsHomeProperty);
   await page.click('button:has-text("Next")');
   console.log('[FILL] Step 2 done, moving to Step 3');
+
   // Step 3 — File Upload
   await page.waitForTimeout(2000);
   if (bankFilePaths && bankFilePaths.length > 0) {
@@ -290,6 +226,7 @@ async function fillPmfApplication(applicant, bankFilePaths) {
   }
   await page.click('button:has-text("Next")');
   console.log('[FILL] Step 3 done, moving to Step 4');
+
   // Step 4 — Consent, stop before signature
   await page.waitForTimeout(2000);
   const shareInfoCheckbox = await page.$('#isAgreeWithShareInformation');
@@ -302,6 +239,7 @@ async function fillPmfApplication(applicant, bankFilePaths) {
   const liveViewUrl = debugUrls.debuggerFullscreenUrl || debugUrls.debuggerUrl;
   return liveViewUrl;
 }
+
 async function fillCombobox(page, selector, value) {
   if (!value) return;
   try {
@@ -322,6 +260,7 @@ async function fillCombobox(page, selector, value) {
     console.log(`[FILL] Combobox ${selector} failed (non-fatal):`, e.message);
   }
 }
+
 async function setToggle(page, selector, shouldBeOn) {
   try {
     const el = await page.$(selector);
@@ -340,47 +279,90 @@ async function setToggle(page, selector, shouldBeOn) {
     console.log(`[FILL] Toggle ${selector} failed:`, e.message);
   }
 }
-async function checkForNewSubmissions() {
+
+// ---------- Drive polling loop ----------
+let processedFolderIds = new Set();
+let pendingFolders = []; // folders seen but not yet 3 minutes old
+let initialized = false;
+
+async function processSubmissionFolder(folder) {
+  console.log(`[PROCESS] ${folder.name} (${folder.id})`);
+  const files = await listFilesInFolder(folder.id);
+  const sheetFiles = files.filter((f) => f.mimeType === 'application/vnd.google-apps.spreadsheet');
+  const pdfFiles = files.filter((f) => f.mimeType === 'application/pdf');
+
+  console.log(`[PROCESS] Found ${sheetFiles.length} sheet(s), ${pdfFiles.length} PDF(s)`);
+
+  let merged = {};
+  for (const sheet of sheetFiles) {
+    try {
+      const map = await readSheetAsMap(sheet.id);
+      merged = { ...merged, ...map };
+    } catch (e) {
+      console.log(`[SHEET] Failed to read ${sheet.name}:`, e.message);
+    }
+  }
+
+  const applicant = mapAnswersToApplicant(merged);
+  console.log('[DATA]', JSON.stringify(applicant));
+
+  const bankFilePaths = [];
+  for (let i = 0; i < pdfFiles.length; i++) {
+    const tmpPath = `/tmp/bank-${folder.id}-${i}.pdf`;
+    try {
+      const buffer = await downloadDriveFileBuffer(pdfFiles[i].id);
+      fs.writeFileSync(tmpPath, buffer);
+      bankFilePaths.push(tmpPath);
+    } catch (e) {
+      console.log(`[PDF] Download failed for ${pdfFiles[i].name}:`, e.message);
+    }
+  }
+
+  const liveViewUrl = await fillPmfApplication(applicant, bankFilePaths);
+  await sendReadyToSignEmail(`${applicant.firstName} ${applicant.lastName}`, liveViewUrl);
+
+  for (const f of bankFilePaths) {
+    try { fs.unlinkSync(f); } catch (e) {}
+  }
+}
+
+async function pollDriveFolders() {
   try {
-    console.log('[POLL] Checking for new submissions...');
-    const submissions = await fetchNewSubmissions();
-    console.log(`[POLL] Fetched ${submissions.length} new submissions`);
-    for (const sub of submissions) {
-      console.log(`[POLL] New UCA submission found: ${sub.id}`);
-      processedSubmissionIds.add(sub.id);
-      const bankUrls = await getBankStatementFiles(sub);
-      console.log(`[PDF] Found ${bankUrls.length} PDF file(s)`);
-      let bankStatementData = null;
-      for (const url of bankUrls) {
-        bankStatementData = await downloadAndExtractBankStatement(url);
-        if (bankStatementData?.addressLine1) {
-          console.log('[PDF] Address extracted:', JSON.stringify(bankStatementData));
-          break;
-        }
+    console.log('[POLL] Checking PMF SUBMISSIONS folder...');
+    const folders = await listSubfolders();
+
+    if (!initialized) {
+      folders.forEach((f) => processedFolderIds.add(f.id));
+      initialized = true;
+      console.log(`[INIT] Marked ${folders.length} existing folder(s) as already seen.`);
+      return;
+    }
+
+    for (const f of folders) {
+      const alreadyKnown = processedFolderIds.has(f.id) || pendingFolders.find((p) => p.id === f.id);
+      if (!alreadyKnown) {
+        console.log(`[POLL] New submission folder detected: ${f.name} — will process in 3 minutes`);
+        pendingFolders.push(f);
       }
-      sub.bankStatementData = bankStatementData;
-      const bankFilePaths = [];
-      for (let i = 0; i < bankUrls.length; i++) {
-        const tmpPath = `/tmp/bank-${sub.id}-${i}.pdf`;
-        try {
-          await downloadFile(bankUrls[i], tmpPath);
-          bankFilePaths.push(tmpPath);
-        } catch (e) {
-          console.log(`[PDF] Download failed for file ${i}:`, e.message);
-        }
-      }
-      const applicant = mapSubmissionToApplicant(sub);
-      console.log('[DATA]', JSON.stringify(applicant));
-      const liveViewUrl = await fillPmfApplication(applicant, bankFilePaths);
-      await sendReadyToSignEmail(`${applicant.firstName} ${applicant.lastName}`, liveViewUrl);
-      for (const f of bankFilePaths) {
-        try { fs.unlinkSync(f); } catch (e) {}
+    }
+
+    const now = Date.now();
+    const ready = pendingFolders.filter((f) => now - new Date(f.createdTime).getTime() >= WAIT_BEFORE_PROCESSING_MS);
+    pendingFolders = pendingFolders.filter((f) => now - new Date(f.createdTime).getTime() < WAIT_BEFORE_PROCESSING_MS);
+
+    for (const folder of ready) {
+      processedFolderIds.add(folder.id);
+      try {
+        await processSubmissionFolder(folder);
+      } catch (e) {
+        console.error(`[ERROR] Failed to process folder ${folder.name}:`, e);
       }
     }
   } catch (err) {
-    console.error('[ERROR]', err);
+    console.error('[ERROR] pollDriveFolders:', err);
   }
 }
-console.log('PMF auto-fill service started. Polling every 2 minutes...');
-checkForNewSubmissions();
-setInterval(checkForNewSubmissions, POLL_INTERVAL_MS);
+
+console.log('PMF auto-fill service started (Google Drive mode). Polling every 2 minutes, 3-minute delay before processing new folders...');
+pollDriveFolders();
+setInterval(pollDriveFolders, POLL_INTERVAL_MS);
