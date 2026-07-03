@@ -89,7 +89,7 @@ function mapAnswersToApplicant(a) {
     website: a['Website'] || '',
     businessPhone: a['Phone Number'] || '',
     ficoScore: a['Credit Score?'] || a['Credit Score'] || '',
-    ownershipPct: (a['Ownership?'] || a['Ownership'] || '100%').replace('%', ''),
+    ownershipPct: '100', // hardcoded — this form requires partner info below 100%, which we don't collect
     employeeCount: a['Number of Employees?'] || a['Number of Employees'] || '1',
     amountRequested: a['Financing Amount?'] || a['Financing Amount'] || '',
     processCreditCards: yesNo(a['Processes Credit Cards']),
