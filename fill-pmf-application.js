@@ -17,6 +17,26 @@ const ENTITY_TYPE_MAP = {
   'CORP': 'C Corporation (C Corp)',
 };
 
+const STATE_NAME_MAP = {
+  AL: 'Alabama', AK: 'Alaska', AZ: 'Arizona', AR: 'Arkansas', CA: 'California',
+  CO: 'Colorado', CT: 'Connecticut', DE: 'Delaware', FL: 'Florida', GA: 'Georgia',
+  HI: 'Hawaii', ID: 'Idaho', IL: 'Illinois', IN: 'Indiana', IA: 'Iowa',
+  KS: 'Kansas', KY: 'Kentucky', LA: 'Louisiana', ME: 'Maine', MD: 'Maryland',
+  MA: 'Massachusetts', MI: 'Michigan', MN: 'Minnesota', MS: 'Mississippi', MO: 'Missouri',
+  MT: 'Montana', NE: 'Nebraska', NV: 'Nevada', NH: 'New Hampshire', NJ: 'New Jersey',
+  NM: 'New Mexico', NY: 'New York', NC: 'North Carolina', ND: 'North Dakota', OH: 'Ohio',
+  OK: 'Oklahoma', OR: 'Oregon', PA: 'Pennsylvania', RI: 'Rhode Island', SC: 'South Carolina',
+  SD: 'South Dakota', TN: 'Tennessee', TX: 'Texas', UT: 'Utah', VT: 'Vermont',
+  VA: 'Virginia', WA: 'Washington', WV: 'West Virginia', WI: 'Wisconsin', WY: 'Wyoming',
+  DC: 'District of Columbia',
+};
+
+function toStateName(code) {
+  if (!code) return code;
+  const trimmed = code.trim();
+  return STATE_NAME_MAP[trimmed.toUpperCase()] || trimmed; // pass through if already a full name
+}
+
 // ---------- email ----------
 const transporter = nodemailer.createTransport({
   service: 'gmail',
@@ -71,7 +91,7 @@ function mapAnswersToApplicant(a) {
     ficoScore: a['Credit Score?'] || a['Credit Score'] || '',
     ownershipPct: (a['Ownership?'] || a['Ownership'] || '100%').replace('%', ''),
     employeeCount: a['Number of Employees?'] || a['Number of Employees'] || '1',
-    amountRequested: a['Financing Amount'] || '',
+    amountRequested: a['Financing Amount?'] || a['Financing Amount'] || '',
     processCreditCards: yesNo(a['Processes Credit Cards']),
     ownsMultipleBusinesses: yesNo(a['Do you own multiple businesses?']),
     isHomeBased: yesNo(a['Is your business homebased?']),
@@ -111,7 +131,7 @@ async function fillPmfApplication(applicant, bankFilePaths) {
   // Step 2 — Business Details
   await page.fill('#businessStartedAt', applicant.businessStartDate);
   await fillCombobox(page, '#businessBusinessType', applicant.industry);
-  if (applicant.stateOfIncorporation) await fillCombobox(page, '#businessStateOfIncorporation', applicant.stateOfIncorporation);
+  if (applicant.stateOfIncorporation) await fillCombobox(page, '#businessStateOfIncorporation', toStateName(applicant.stateOfIncorporation));
   await page.fill('#businessFederalTaxId', applicant.ein);
   if (applicant.website) {
     await page.fill('#businessWebsite', applicant.website);
@@ -144,7 +164,7 @@ async function fillPmfApplication(applicant, bankFilePaths) {
   if (applicant.addressLine1) await page.fill('#businessAddressLine1', applicant.addressLine1);
   if (applicant.addressLine2) await page.fill('#businessAddressLine2', applicant.addressLine2);
   if (applicant.city) await page.fill('#businessCity', applicant.city);
-  if (applicant.state) await fillCombobox(page, '#businessState', applicant.state);
+  if (applicant.state) await fillCombobox(page, '#businessState', toStateName(applicant.state));
   if (applicant.zip) await page.fill('#businessZipCode', applicant.zip);
   await setToggle(page, '#merchantHomePropertyOwner', applicant.ownsHomeProperty);
   await page.click('button:has-text("Next")');
