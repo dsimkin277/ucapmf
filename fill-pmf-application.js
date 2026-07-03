@@ -3,14 +3,9 @@ const Browserbase = require('@browserbasehq/sdk').default;
 const http = require('http');
 const nodemailer = require('nodemailer');
 const fs = require('fs');
-const { google } = require('googleapis');
 
 const PMF_URL = 'https://apply.myrmapp.com/multi-step-apply/drubin';
-const POLL_INTERVAL_MS = 2 * 60 * 1000; // check for new folders every 2 minutes
-const WAIT_BEFORE_PROCESSING_MS = 3 * 60 * 1000; // wait 3 minutes after a folder appears before reading it
-
-const PMF_SUBMISSIONS_FOLDER_ID = process.env.PMF_SUBMISSIONS_FOLDER_ID;
-const GOOGLE_SERVICE_ACCOUNT_KEY = process.env.GOOGLE_SERVICE_ACCOUNT_KEY; // full JSON key, pasted as one line
+const SUBMISSION_WEBHOOK_SECRET = process.env.SUBMISSION_WEBHOOK_SECRET; // must match the secret in the Apps Script
 
 const bb = new Browserbase({ apiKey: process.env.BROWSERBASE_API_KEY });
 const BROWSERBASE_PROJECT_ID = process.env.BROWSERBASE_PROJECT_ID;
@@ -21,26 +16,6 @@ const ENTITY_TYPE_MAP = {
   'INC': 'C Corporation (C Corp)',
   'CORP': 'C Corporation (C Corp)',
 };
-
-// ---------- Google Drive / Sheets auth ----------
-const serviceAccount = JSON.parse(GOOGLE_SERVICE_ACCOUNT_KEY);
-const auth = new google.auth.JWT({
-  email: serviceAccount.client_email,
-  key: serviceAccount.private_key,
-  scopes: [
-    'https://www.googleapis.com/auth/drive.readonly',
-    'https://www.googleapis.com/auth/spreadsheets.readonly',
-  ],
-});
-const drive = google.drive({ version: 'v3', auth });
-const sheets = google.sheets({ version: 'v4', auth });
-
-// ---------- health check server (Render needs this) ----------
-const PORT = process.env.PORT || 3000;
-http.createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'text/plain' });
-  res.end('PMF auto-fill service is running.\n');
-}).listen(PORT, () => console.log(`Health check server listening on port ${PORT}`));
 
 // ---------- email ----------
 const transporter = nodemailer.createTransport({
@@ -67,54 +42,16 @@ async function sendReadyToSignEmail(applicantName, liveViewUrl) {
   console.log(`Notification email sent for ${applicantName}`);
 }
 
-// ---------- Google Drive helpers ----------
-async function listSubfolders() {
-  const res = await drive.files.list({
-    q: `'${PMF_SUBMISSIONS_FOLDER_ID}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
-    fields: 'files(id, name, createdTime)',
-    orderBy: 'createdTime desc',
-    pageSize: 100,
-  });
-  return res.data.files || [];
-}
-
-async function listFilesInFolder(folderId) {
-  const res = await drive.files.list({
-    q: `'${folderId}' in parents and trashed=false`,
-    fields: 'files(id, name, mimeType)',
-    pageSize: 100,
-  });
-  return res.data.files || [];
-}
-
-async function readSheetAsMap(spreadsheetId) {
-  const res = await sheets.spreadsheets.values.get({ spreadsheetId, range: 'A:B' });
-  const rows = res.data.values || [];
-  const map = {};
-  // skip header row
-  for (const row of rows.slice(1)) {
-    const key = (row[0] || '').trim();
-    const value = (row[1] || '').trim();
-    if (key) map[key] = value;
-  }
-  return map;
-}
-
-async function downloadDriveFileBuffer(fileId) {
-  const res = await drive.files.get({ fileId, alt: 'media' }, { responseType: 'arraybuffer' });
-  return Buffer.from(res.data);
-}
-
 // ---------- field mapping ----------
 function formatDate(iso) {
   if (!iso) return '';
-  const m = iso.match(/(\d{4})-(\d{2})-(\d{2})/);
+  const m = String(iso).match(/(\d{4})-(\d{2})-(\d{2})/);
   if (m) return `${m[2]}/${m[3]}/${m[1]}`;
   return iso; // already formatted or unrecognized, pass through
 }
 
 function yesNo(v) {
-  return /^y(es)?$/i.test((v || '').trim());
+  return /^y(es)?$/i.test(String(v || '').trim());
 }
 
 function mapAnswersToApplicant(a) {
@@ -280,89 +217,87 @@ async function setToggle(page, selector, shouldBeOn) {
   }
 }
 
-// ---------- Drive polling loop ----------
-let processedFolderIds = new Set();
-let pendingFolders = []; // folders seen but not yet 3 minutes old
-let initialized = false;
+// ---------- process one submission received from Apps Script ----------
+let busy = false; // simple lock so two submissions can't run Playwright at the same time
 
-async function processSubmissionFolder(folder) {
-  console.log(`[PROCESS] ${folder.name} (${folder.id})`);
-  const files = await listFilesInFolder(folder.id);
-  const sheetFiles = files.filter((f) => f.mimeType === 'application/vnd.google-apps.spreadsheet');
-  const pdfFiles = files.filter((f) => f.mimeType === 'application/pdf');
-
-  console.log(`[PROCESS] Found ${sheetFiles.length} sheet(s), ${pdfFiles.length} PDF(s)`);
-
-  let merged = {};
-  for (const sheet of sheetFiles) {
-    try {
-      const map = await readSheetAsMap(sheet.id);
-      merged = { ...merged, ...map };
-    } catch (e) {
-      console.log(`[SHEET] Failed to read ${sheet.name}:`, e.message);
-    }
+async function handleSubmission(body, res) {
+  if (body.secret !== SUBMISSION_WEBHOOK_SECRET) {
+    console.log('[WEBHOOK] Rejected: bad secret');
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+    return;
   }
 
-  const applicant = mapAnswersToApplicant(merged);
-  console.log('[DATA]', JSON.stringify(applicant));
+  // Acknowledge immediately so Apps Script doesn't time out; do the real work after responding.
+  res.writeHead(202, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ ok: true, status: 'accepted' }));
 
-  const bankFilePaths = [];
-  for (let i = 0; i < pdfFiles.length; i++) {
-    const tmpPath = `/tmp/bank-${folder.id}-${i}.pdf`;
-    try {
-      const buffer = await downloadDriveFileBuffer(pdfFiles[i].id);
-      fs.writeFileSync(tmpPath, buffer);
-      bankFilePaths.push(tmpPath);
-    } catch (e) {
-      console.log(`[PDF] Download failed for ${pdfFiles[i].name}:`, e.message);
-    }
+  if (busy) {
+    console.log('[WEBHOOK] Busy with another submission — this one will still run next, in order.');
   }
-
-  const liveViewUrl = await fillPmfApplication(applicant, bankFilePaths);
-  await sendReadyToSignEmail(`${applicant.firstName} ${applicant.lastName}`, liveViewUrl);
-
-  for (const f of bankFilePaths) {
-    try { fs.unlinkSync(f); } catch (e) {}
+  while (busy) {
+    await new Promise((r) => setTimeout(r, 2000));
   }
-}
+  busy = true;
 
-async function pollDriveFolders() {
   try {
-    console.log('[POLL] Checking PMF SUBMISSIONS folder...');
-    const folders = await listSubfolders();
+    const answers = body.answers || {};
+    const files = body.files || [];
+    const applicant = mapAnswersToApplicant(answers);
+    console.log('[DATA]', JSON.stringify(applicant));
 
-    if (!initialized) {
-      folders.forEach((f) => processedFolderIds.add(f.id));
-      initialized = true;
-      console.log(`[INIT] Marked ${folders.length} existing folder(s) as already seen.`);
-      return;
-    }
-
-    for (const f of folders) {
-      const alreadyKnown = processedFolderIds.has(f.id) || pendingFolders.find((p) => p.id === f.id);
-      if (!alreadyKnown) {
-        console.log(`[POLL] New submission folder detected: ${f.name} — will process in 3 minutes`);
-        pendingFolders.push(f);
-      }
-    }
-
-    const now = Date.now();
-    const ready = pendingFolders.filter((f) => now - new Date(f.createdTime).getTime() >= WAIT_BEFORE_PROCESSING_MS);
-    pendingFolders = pendingFolders.filter((f) => now - new Date(f.createdTime).getTime() < WAIT_BEFORE_PROCESSING_MS);
-
-    for (const folder of ready) {
-      processedFolderIds.add(folder.id);
+    const bankFilePaths = [];
+    for (let i = 0; i < files.length; i++) {
+      const tmpPath = `/tmp/bank-${Date.now()}-${i}.pdf`;
       try {
-        await processSubmissionFolder(folder);
+        fs.writeFileSync(tmpPath, Buffer.from(files[i].base64, 'base64'));
+        bankFilePaths.push(tmpPath);
       } catch (e) {
-        console.error(`[ERROR] Failed to process folder ${folder.name}:`, e);
+        console.log(`[PDF] Failed to write ${files[i].filename}:`, e.message);
       }
+    }
+
+    const liveViewUrl = await fillPmfApplication(applicant, bankFilePaths);
+    await sendReadyToSignEmail(`${applicant.firstName} ${applicant.lastName}`, liveViewUrl);
+
+    for (const f of bankFilePaths) {
+      try { fs.unlinkSync(f); } catch (e) {}
     }
   } catch (err) {
-    console.error('[ERROR] pollDriveFolders:', err);
+    console.error('[ERROR] handleSubmission:', err);
+  } finally {
+    busy = false;
   }
 }
 
-console.log('PMF auto-fill service started (Google Drive mode). Polling every 2 minutes, 3-minute delay before processing new folders...');
-pollDriveFolders();
-setInterval(pollDriveFolders, POLL_INTERVAL_MS);
+// ---------- HTTP server: health check + webhook ----------
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
+  if (req.method === 'GET' && req.url === '/') {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('PMF auto-fill service is running.\n');
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/submit') {
+    let raw = '';
+    req.on('data', (chunk) => { raw += chunk; });
+    req.on('end', () => {
+      let body;
+      try {
+        body = JSON.parse(raw);
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'invalid json' }));
+        return;
+      }
+      handleSubmission(body, res).catch((e) => console.error('[ERROR] handleSubmission crashed:', e));
+    });
+    return;
+  }
+
+  res.writeHead(404, { 'Content-Type': 'text/plain' });
+  res.end('Not found\n');
+}).listen(PORT, () => console.log(`PMF auto-fill service listening on port ${PORT}`));
+
+console.log('PMF auto-fill service started (webhook mode). Waiting for submissions from Apps Script...');
