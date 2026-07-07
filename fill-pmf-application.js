@@ -138,7 +138,12 @@ async function fillPmfApplication(applicant, bankFilePaths) {
     console.log('[FILL] Website filled:', applicant.website);
   } else {
     try {
-      await page.getByRole('checkbox', { name: /does not have a website/i }).check();
+      const noWebsiteCheckbox = page.getByRole('checkbox', { name: /does not have a website/i });
+      await noWebsiteCheckbox.check();
+      await page.waitForTimeout(500); // let the page clear the website field's "required" state
+      await page.click('#businessWebsite');
+      await page.keyboard.press('Tab'); // blur the field so it re-validates as no-longer-required
+      await page.waitForTimeout(300);
       console.log('[FILL] No website provided, checked "does not have a website"');
     } catch (e) {
       console.log('[FILL] Could not check "no website" checkbox (non-fatal):', e.message);
