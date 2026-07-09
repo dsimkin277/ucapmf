@@ -37,6 +37,15 @@ function toStateName(code) {
   return STATE_NAME_MAP[trimmed.toUpperCase()] || trimmed; // pass through if already a full name
 }
 
+const NO_WEBSITE_PLACEHOLDERS = ['na', 'n/a', 'n.a.', 'none', 'nowebsite', 'nowebsite.com', 'no website', 'n a'];
+function hasRealWebsite(value) {
+  if (!value) return false;
+  const cleaned = value.trim().toLowerCase();
+  if (!cleaned) return false;
+  if (NO_WEBSITE_PLACEHOLDERS.includes(cleaned)) return false;
+  return true;
+}
+
 // ---------- email ----------
 const transporter = nodemailer.createTransport({
   service: 'gmail',
@@ -133,7 +142,7 @@ async function fillPmfApplication(applicant, bankFilePaths) {
   await fillCombobox(page, '#businessBusinessType', applicant.industry);
   if (applicant.stateOfIncorporation) await fillCombobox(page, '#businessStateOfIncorporation', toStateName(applicant.stateOfIncorporation));
   await page.fill('#businessFederalTaxId', applicant.ein);
-  if (applicant.website) {
+  if (hasRealWebsite(applicant.website)) {
     await page.fill('#businessWebsite', applicant.website);
     console.log('[FILL] Website filled:', applicant.website);
   } else {
