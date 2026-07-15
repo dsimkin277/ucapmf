@@ -40,9 +40,13 @@ function toStateName(code) {
 const NO_WEBSITE_PLACEHOLDERS = ['na', 'n/a', 'n.a.', 'none', 'nowebsite', 'nowebsite.com', 'no website', 'n a'];
 function hasRealWebsite(value) {
   if (!value) return false;
-  const cleaned = value.trim().toLowerCase();
+  const cleaned = value.trim();
   if (!cleaned) return false;
-  if (NO_WEBSITE_PLACEHOLDERS.includes(cleaned)) return false;
+  const lower = cleaned.toLowerCase();
+  if (NO_WEBSITE_PLACEHOLDERS.includes(lower)) return false;
+  if (lower.includes('does not have') || lower.includes('no website')) return false;
+  if (/\s/.test(cleaned)) return false; // real domains never contain spaces
+  if (!cleaned.includes('.')) return false; // real domains always contain a dot
   return true;
 }
 
@@ -95,7 +99,7 @@ function mapAnswersToApplicant(a) {
     businessStartDate: formatDate(a['Business Starting Date']),
     industry: a['Business Industry'] || '',
     ein: a['EIN'] || '',
-    website: a['Website'] || '',
+    website: a['Website'] || a['Company Website'] || '',
     businessPhone: a['Phone Number'] || '',
     ficoScore: a['Credit Score?'] || a['Credit Score'] || '',
     ownershipPct: '100', // hardcoded — this form requires partner info below 100%, which we don't collect
@@ -146,16 +150,31 @@ async function fillPmfApplication(applicant, bankFilePaths) {
     await page.fill('#businessWebsite', applicant.website);
     console.log('[FILL] Website filled:', applicant.website);
   } else {
+    let checked = false;
     try {
-      const noWebsiteCheckbox = page.getByRole('checkbox', { name: /does not have a website/i });
-      await noWebsiteCheckbox.check();
+      await page.getByRole('checkbox', { name: /does not have a website/i }).check({ timeout: 5000 });
+      checked = true;
+    } catch (e) {
+      console.log('[FILL] getByRole checkbox failed, trying label-click fallback:', e.message);
+    }
+    if (!checked) {
+      try {
+        await page.getByText(/does not have a website/i).first().click({ timeout: 5000 });
+        checked = true;
+      } catch (e2) {
+        console.log('[FILL] Label-click fallback also failed (non-fatal):', e2.message);
+      }
+    }
+    if (checked) {
       await page.waitForTimeout(500); // let the page clear the website field's "required" state
-      await page.click('#businessWebsite');
-      await page.keyboard.press('Tab'); // blur the field so it re-validates as no-longer-required
+      try {
+        await page.click('#businessWebsite');
+        await page.keyboard.press('Tab'); // blur the field so it re-validates as no-longer-required
+      } catch (e3) {
+        // non-fatal
+      }
       await page.waitForTimeout(300);
       console.log('[FILL] No website provided, checked "does not have a website"');
-    } catch (e) {
-      console.log('[FILL] Could not check "no website" checkbox (non-fatal):', e.message);
     }
   }
   await page.fill('#businessPhone', applicant.businessPhone);
