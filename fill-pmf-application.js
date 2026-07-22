@@ -121,7 +121,7 @@ function mapAnswersToApplicant(a) {
 
 // ---------- form filling (unchanged logic from the working version) ----------
 async function fillPmfApplication(applicant, bankFilePaths) {
-  const session = await bb.sessions.create({ projectId: BROWSERBASE_PROJECT_ID });
+  const session = await bb.sessions.create({ projectId: BROWSERBASE_PROJECT_ID, timeout: 1200 }); // 20 minutes, so the sign-off link doesn't expire before it's opened
   const browser = await chromium.connectOverCDP(session.connectUrl);
   const context = browser.contexts()[0];
   const page = context.pages()[0] || (await context.newPage());
