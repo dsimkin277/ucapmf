@@ -1,4 +1,4 @@
-const { chromium } = require('playwright-core');
+ const { chromium } = require('playwright-core');
 const Browserbase = require('@browserbasehq/sdk').default;
 const http = require('http');
 const nodemailer = require('nodemailer');
@@ -105,10 +105,24 @@ function mapAnswersToApplicant(a) {
     ownershipPct: '100', // hardcoded — this form requires partner info below 100%, which we don't collect
     employeeCount: a['Number of Employees?'] || a['Number of Employees'] || '1',
     amountRequested: a['Financing Amount?'] || a['Financing Amount'] || '',
-    processCreditCards: yesNo(a['Processes Credit Cards']),
-    ownsMultipleBusinesses: yesNo(a['Do you own multiple businesses?']),
-    isHomeBased: yesNo(a['Is your business homebased?']),
-    ownsHomeProperty: yesNo(a['Do you own a home property?']),
+    // NOTE: each of these now checks multiple possible spellings of the question text
+    // (with/without trailing "?", with/without a space in "home based"), because a single
+    // exact-key miss here silently reads as blank -> false ("NO") instead of erroring.
+    processCreditCards: yesNo(
+      a['Processes Credit Cards?'] || a['Processes Credit Cards']
+    ),
+    ownsMultipleBusinesses: yesNo(
+      a['Do you own multiple businesses?'] || a['Do you own multiple businesses']
+    ),
+    isHomeBased: yesNo(
+      a['Is your business homebased?'] ||
+      a['Is your business homebased'] ||
+      a['Is your business home based?'] ||
+      a['Is your business home based']
+    ),
+    ownsHomeProperty: yesNo(
+      a['Do you own a home property?'] || a['Do you own a home property']
+    ),
     stateOfIncorporation: a['State'] || '',
     entityType: a['Entity Type'] || '',
     addressLine1: a['Address 1'] || '',
@@ -121,7 +135,7 @@ function mapAnswersToApplicant(a) {
 
 // ---------- form filling (unchanged logic from the working version) ----------
 async function fillPmfApplication(applicant, bankFilePaths) {
-  const session = await bb.sessions.create({ projectId: BROWSERBASE_PROJECT_ID, timeout: 1200 }); // 20 minutes, so the sign-off link doesn't expire before it's opened
+  const session = await bb.sessions.create({ projectId: BROWSERBASE_PROJECT_ID });
   const browser = await chromium.connectOverCDP(session.connectUrl);
   const context = browser.contexts()[0];
   const page = context.pages()[0] || (await context.newPage());
@@ -206,20 +220,12 @@ async function fillPmfApplication(applicant, bankFilePaths) {
   // Step 3 — File Upload
   await page.waitForTimeout(2000);
   if (bankFilePaths && bankFilePaths.length > 0) {
-    // Upload one file at a time, like a human clicking "add file" repeatedly.
-    // Handing all files to the input in a single setInputFiles() call was silently
-    // only registering the first file on PMF's side, even though our own log said
-    // all were "uploaded" — the browser accepted them, but PMF's own upload widget
-    // didn't pick up more than one from a single batch.
-    for (let i = 0; i < bankFilePaths.length; i++) {
-      try {
-        const fileInput = page.locator('input[type="file"]').first();
-        await fileInput.setInputFiles([bankFilePaths[i]]);
-        console.log(`[FILL] Uploaded file ${i + 1}/${bankFilePaths.length}: ${bankFilePaths[i]}`);
-        await page.waitForTimeout(1500); // give PMF's site time to register this file before adding the next
-      } catch (e) {
-        console.log(`[FILL] Upload failed for file ${i + 1}/${bankFilePaths.length} (non-fatal):`, e.message);
-      }
+    try {
+      const fileInput = page.locator('input[type="file"]').first();
+      await fileInput.setInputFiles(bankFilePaths);
+      console.log(`[FILL] Uploaded ${bankFilePaths.length} bank statement file(s)`);
+    } catch (e) {
+      console.log('[FILL] File upload failed (non-fatal):', e.message);
     }
   }
   await page.click('button:has-text("Next")');
