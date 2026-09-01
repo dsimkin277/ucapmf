@@ -218,14 +218,20 @@ async function fillPmfApplication(applicant, bankFilePaths) {
   console.log('[FILL] Step 2 done, moving to Step 3');
 
   // Step 3 — File Upload
+  // PMF's upload widget only accepts ONE file per setInputFiles() call — passing an array
+  // silently keeps only the first file. Upload one at a time with a pause between each so
+  // the widget registers the previous file before the next one is attached.
   await page.waitForTimeout(2000);
   if (bankFilePaths && bankFilePaths.length > 0) {
-    try {
-      const fileInput = page.locator('input[type="file"]').first();
-      await fileInput.setInputFiles(bankFilePaths);
-      console.log(`[FILL] Uploaded ${bankFilePaths.length} bank statement file(s)`);
-    } catch (e) {
-      console.log('[FILL] File upload failed (non-fatal):', e.message);
+    for (let i = 0; i < bankFilePaths.length; i++) {
+      try {
+        const fileInput = page.locator('input[type="file"]').first();
+        await fileInput.setInputFiles(bankFilePaths[i]);
+        console.log(`[FILL] Uploaded file ${i + 1}/${bankFilePaths.length}: ${bankFilePaths[i]}`);
+        await page.waitForTimeout(1500);
+      } catch (e) {
+        console.log(`[FILL] Upload failed for file ${i + 1}/${bankFilePaths.length} (non-fatal):`, e.message);
+      }
     }
   }
   await page.click('button:has-text("Next")');
